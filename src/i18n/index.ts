@@ -1,0 +1,81 @@
+import { createI18n } from 'vue-i18n'
+import zhCN from './zh-CN.json'
+import zhTW from './zh-TW.json'
+import en from './en.json'
+import ja from './ja.json'
+
+export const SUPPORTED_LOCALES = [
+  { code: 'zh-CN', label: '简体中文' },
+  { code: 'zh-TW', label: '繁體中文' },
+  { code: 'en', label: 'English' },
+  { code: 'ja', label: '日本語' },
+] as const
+
+// 检测系统语言
+function detectLocale(): string {
+  // 优先读取存储的设置（后续接入 tauri-plugin-store）
+  const stored = localStorage.getItem('locale')
+  if (stored) return stored
+
+  const nav = navigator.language || 'zh-CN'
+  if (nav === 'zh-TW' || nav === 'zh-Hant') return 'zh-TW'
+  if (nav.startsWith('zh')) return 'zh-CN'
+  if (nav.startsWith('ja')) return 'ja'
+  return 'en'
+}
+
+const i18n = createI18n({
+  legacy: false,
+  locale: detectLocale(),
+  fallbackLocale: 'zh-CN',
+  messages: {
+    'zh-CN': zhCN,
+    'zh-TW': zhTW,
+    en,
+    ja,
+  },
+})
+
+export default i18n
+
+export function setLocale(locale: string) {
+  ;(i18n.global.locale as any).value = locale
+  localStorage.setItem('locale', locale)
+  document.documentElement.lang = locale
+}
+
+/** 带 View Transition 动画的语言切换 */
+export async function setLocaleWithTransition(locale: string, x?: number, y?: number) {
+  if (!(document as any).startViewTransition || !x || !y) {
+    setLocale(locale)
+    return
+  }
+
+  const maxRadius = Math.hypot(
+    Math.max(x, window.innerWidth - x),
+    Math.max(y, window.innerHeight - y),
+  )
+
+  const transition = (document as any).startViewTransition(() => {
+    setLocale(locale)
+  })
+
+  try {
+    await transition.ready
+    document.documentElement.animate(
+      {
+        clipPath: [
+          `circle(0px at ${x}px ${y}px)`,
+          `circle(${maxRadius}px at ${x}px ${y}px)`,
+        ],
+      },
+      {
+        duration: 700,
+        easing: 'cubic-bezier(0.2, 0, 0, 1)',
+        pseudoElement: '::view-transition-new(root)',
+      },
+    )
+  } catch {
+    // 中断无影响
+  }
+}

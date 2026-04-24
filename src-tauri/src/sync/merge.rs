@@ -1,0 +1,367 @@
+// 三方合并算法 — 对齐 Android GitHubSyncManager.performThreeWayMerge
+use std::collections::{HashMap, HashSet};
+use super::models::*;
+
+const MAX_RECENT_PLAYS: usize = 500;
+const MAX_DELETIONS: usize = 500;
+const MAX_SYNC_LOG: usize = 100;
+
+/// 执行三方合并
+/// base_snapshot: 上次同步后每个歌单的歌曲 stable_key 集合，用于检测本地/远程删除
+pub fn three_way_merge(
+    local: &SyncData,
+    remote: &SyncData,
+    last_sync_time: i64,
+    base_snapshot: &HashMap<String, HashSet<String>>,
+) -> SyncData {
+    let playlists = merge_playlists(&local.playlists, &remote.playlists, last_sync_time, base_snapshot);
+    let favorites = merge_favorite_playlists(&local.favorite_playlists, &remote.favorite_playlists, last_sync_time);
+    let deletions = merge_recent_play_deletions(&local.recent_play_deletions, &remote.recent_play_deletions);
+    let recent = merge_recent_plays(&local.recent_plays, &remote.recent_plays, &deletions);
+    let log = merge_sync_log(&local.sync_log, &remote.sync_log);
+
+    SyncData {
+        version: "2.0".into(),
+        device_id: local.device_id.clone(),
+        device_name: local.device_name.clone(),
+        last_modified: chrono::Utc::now().timestamp_millis(),
+        playlists,
+        favorite_playlists: favorites,
+        recent_plays: recent,
+        sync_log: log,
+        recent_play_deletions: deletions,
+    }
+}
+
+// ===== 歌单合并 =====
+
+fn merge_playlists(local: &[SyncPlaylist], remote: &[SyncPlaylist], last_sync_time: i64, base_snapshot: &HashMap<String, HashSet<String>>) -> Vec<SyncPlaylist> {
+    let local_map: HashMap<&str, &SyncPlaylist> = local.iter().map(|p| (p.id.as_str(), p)).collect();
+    let remote_map: HashMap<&str, &SyncPlaylist> = remote.iter().map(|p| (p.id.as_str(), p)).collect();
+
+    let all_ids: HashSet<&str> = local_map.keys().chain(remote_map.keys()).copied().collect();
+    let mut merged: HashMap<String, SyncPlaylist> = HashMap::new();
+
+    for id in all_ids {
+        let local_pl = local_map.get(id).copied();
+        let remote_pl = remote_map.get(id).copied();
+
+        let result = match (local_pl, remote_pl) {
+            (Some(l), None) => {
+                if !l.is_deleted { Some(l.clone()) } else { None }
+            }
+            (None, Some(r)) => {
+                if !r.is_deleted { Some(r.clone()) } else { None }
+            }
+            (Some(l), Some(r)) => {
+                // 任一标记删除 -> 删除（墓碑胜出）
+                if l.is_deleted || r.is_deleted {
+                    None
+                } else {
+                    let base_songs = base_snapshot.get(id).cloned().unwrap_or_default();
+                    Some(merge_single_playlist(l, r, last_sync_time, &base_songs))
+                }
+            }
+            (None, None) => None,
+        };
+
+        if let Some(p) = result {
+            merged.insert(id.to_string(), p);
+        }
+    }
+
+    // 排序：以修改时间较新的一方的顺序为主
+    order_merged_playlists(&merged, local, remote, last_sync_time)
+}
+
+fn merge_single_playlist(local: &SyncPlaylist, remote: &SyncPlaylist, last_sync_time: i64, base_songs: &HashSet<String>) -> SyncPlaylist {
+    // 名称：取更新的
+    let name = if local.name == remote.name {
+        local.name.clone()
+    } else if remote.modified_at > last_sync_time && local.modified_at <= last_sync_time {
+        remote.name.clone()
+    } else {
+        local.name.clone() // 本地优先
+    };
+
+    // 歌曲合并
+    let songs = merge_songs(&local.songs, &remote.songs, last_sync_time, base_songs);
+
+    SyncPlaylist {
+        id: local.id.clone(),
+        name,
+        songs,
+        created_at: local.created_at.min(remote.created_at),
+        modified_at: local.modified_at.max(remote.modified_at),
+        is_deleted: false,
+    }
+}
+
+/// 三方歌曲合并：
+/// - base_songs: 上次同步后的歌曲 stable_key 集合
+/// - 在 base 中存在但本地不存在 -> 本地删除，从结果中排除（即使远程还有）
+/// - 在 base 中存在但远程不存在 -> 远程删除，从结果中排除（即使本地还有）
+/// - 不在 base 中且仅在本地/远程 -> 新增，保留
+/// - base 为空（首次同步）-> 退化为 additive 合并
+fn merge_songs(local: &[SyncSong], remote: &[SyncSong], _last_sync_time: i64, base_songs: &HashSet<String>) -> Vec<SyncSong> {
+    if remote.is_empty() && !local.is_empty() {
+        return local.to_vec();
+    }
+    if local.is_empty() && !remote.is_empty() {
+        return remote.to_vec();
+    }
+
+    let local_keys: HashSet<String> = local.iter().map(|s| s.identity().stable_key()).collect();
+    let remote_keys: HashSet<String> = remote.iter().map(|s| s.identity().stable_key()).collect();
+
+    // 计算删除集合
+    // 在 base 中存在但本地不存在 -> 本地删除
+    let locally_deleted: HashSet<&String> = base_songs.iter()
+        .filter(|k| !local_keys.contains(*k))
+        .collect();
+    // 在 base 中存在但远程不存在 -> 远程删除
+    let remotely_deleted: HashSet<&String> = base_songs.iter()
+        .filter(|k| !remote_keys.contains(*k))
+        .collect();
+
+    // 以本地为基准
+    let mut result: Vec<SyncSong> = Vec::new();
+
+    for song in local {
+        let key = song.identity().stable_key();
+        // 跳过远程删除的歌曲
+        if remotely_deleted.contains(&key) {
+            continue;
+        }
+        result.push(song.clone());
+    }
+
+    // 追加远程独有（不在本地中、且非本地删除的）
+    let result_keys: HashSet<String> = result.iter().map(|s| s.identity().stable_key()).collect();
+    for song in remote {
+        let key = song.identity().stable_key();
+        if !result_keys.contains(&key) && !locally_deleted.contains(&key) {
+            result.push(song.clone());
+        }
+    }
+
+    result
+}
+
+fn order_merged_playlists(
+    merged: &HashMap<String, SyncPlaylist>,
+    local: &[SyncPlaylist],
+    remote: &[SyncPlaylist],
+    last_sync_time: i64,
+) -> Vec<SyncPlaylist> {
+    // 优先使用有修改的一方的顺序
+    let local_modified = local.iter().any(|p| p.modified_at > last_sync_time);
+    let remote_modified = remote.iter().any(|p| p.modified_at > last_sync_time);
+
+    let (primary, secondary) = if remote_modified && !local_modified {
+        (remote, local)
+    } else {
+        (local, remote)
+    };
+
+    let mut ordered = Vec::new();
+    let mut seen = HashSet::new();
+
+    // 按主序列排
+    for p in primary {
+        if merged.contains_key(&p.id) && seen.insert(p.id.clone()) {
+            ordered.push(merged[&p.id].clone());
+        }
+    }
+    // 补充副序列中未出现的
+    for p in secondary {
+        if merged.contains_key(&p.id) && seen.insert(p.id.clone()) {
+            ordered.push(merged[&p.id].clone());
+        }
+    }
+    // 其余
+    for (id, p) in merged {
+        if seen.insert(id.clone()) {
+            ordered.push(p.clone());
+        }
+    }
+
+    ordered
+}
+
+// ===== 收藏歌单合并 =====
+
+fn merge_favorite_playlists(
+    local: &[SyncFavoritePlaylist],
+    remote: &[SyncFavoritePlaylist],
+    _last_sync_time: i64,
+) -> Vec<SyncFavoritePlaylist> {
+    let mut by_key: HashMap<String, SyncFavoritePlaylist> = HashMap::new();
+
+    for fp in local.iter().chain(remote.iter()) {
+        let key = fp.group_key();
+        by_key.entry(key)
+            .and_modify(|existing| {
+                *existing = merge_single_favorite(existing, fp);
+            })
+            .or_insert_with(|| fp.clone());
+    }
+
+    let mut result: Vec<SyncFavoritePlaylist> = by_key.into_values().collect();
+    result.sort_by(|a, b| b.added_time.cmp(&a.added_time));
+    result
+}
+
+fn merge_single_favorite(a: &SyncFavoritePlaylist, b: &SyncFavoritePlaylist) -> SyncFavoritePlaylist {
+    // 较新的为基础
+    let (newer, older) = if a.modified_at >= b.modified_at { (a, b) } else { (b, a) };
+
+    // 删除状态：较新的说了算
+    if newer.is_deleted && older.is_deleted {
+        let mut result = newer.clone();
+        result.added_time = newer.added_time.max(older.added_time);
+        result.modified_at = newer.modified_at.max(older.modified_at);
+        return result;
+    }
+
+    let mut result = newer.clone();
+    result.added_time = newer.added_time.max(older.added_time);
+    result.modified_at = newer.modified_at.max(older.modified_at);
+    result.track_count = newer.track_count.max(older.track_count);
+
+    if !result.is_deleted {
+        // 合并歌曲
+        let existing_keys: HashSet<String> = result.songs.iter().map(|s| s.identity().stable_key()).collect();
+        for song in &older.songs {
+            if !existing_keys.contains(&song.identity().stable_key()) {
+                result.songs.push(song.clone());
+            }
+        }
+    }
+
+    if result.sort_order == 0 {
+        result.sort_order = older.sort_order;
+    }
+
+    result
+}
+
+// ===== 最近播放合并 =====
+
+fn merge_recent_plays(
+    local: &[SyncRecentPlay],
+    remote: &[SyncRecentPlay],
+    deletions: &[SyncRecentPlayDeletion],
+) -> Vec<SyncRecentPlay> {
+    let deletion_keys: HashMap<String, i64> = deletions.iter()
+        .map(|d| (d.identity().stable_key(), d.deleted_at))
+        .collect();
+
+    let mut all: Vec<SyncRecentPlay> = local.iter().chain(remote.iter()).cloned().collect();
+    all.sort_by(|a, b| b.played_at.cmp(&a.played_at));
+
+    // 去重 + 过滤已删除
+    let mut seen = HashSet::new();
+    let mut result = Vec::new();
+
+    for rp in all {
+        let key = rp.song.identity().stable_key();
+
+        // 过滤：如果有删除记录且删除时间晚于播放时间
+        if let Some(&del_time) = deletion_keys.get(&key) {
+            if del_time > rp.played_at {
+                continue;
+            }
+        }
+
+        if seen.insert(key) {
+            result.push(rp);
+        }
+    }
+
+    result.truncate(MAX_RECENT_PLAYS);
+    result
+}
+
+// ===== 删除记录合并 =====
+
+fn merge_recent_play_deletions(
+    local: &[SyncRecentPlayDeletion],
+    remote: &[SyncRecentPlayDeletion],
+) -> Vec<SyncRecentPlayDeletion> {
+    let mut by_key: HashMap<String, SyncRecentPlayDeletion> = HashMap::new();
+
+    for d in local.iter().chain(remote.iter()) {
+        let key = d.identity().stable_key();
+        by_key.entry(key)
+            .and_modify(|existing| {
+                if d.deleted_at > existing.deleted_at {
+                    *existing = d.clone();
+                }
+            })
+            .or_insert_with(|| d.clone());
+    }
+
+    let mut result: Vec<SyncRecentPlayDeletion> = by_key.into_values().collect();
+    result.sort_by(|a, b| b.deleted_at.cmp(&a.deleted_at));
+    result.truncate(MAX_DELETIONS);
+    result
+}
+
+// ===== 同步日志合并 =====
+
+fn merge_sync_log(local: &[SyncLogEntry], remote: &[SyncLogEntry]) -> Vec<SyncLogEntry> {
+    let mut seen = HashSet::new();
+    let mut all: Vec<SyncLogEntry> = Vec::new();
+
+    for entry in local.iter().chain(remote.iter()) {
+        // 按时间戳去重
+        if seen.insert(entry.timestamp) {
+            all.push(entry.clone());
+        }
+    }
+
+    all.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    all.truncate(MAX_SYNC_LOG);
+    all
+}
+
+/// 检查合并后的数据是否与远程有变化（决定是否需要上传）
+pub fn has_data_changed(remote: &SyncData, merged: &SyncData) -> bool {
+    // 歌单数量或 ID 不同
+    if remote.playlists.len() != merged.playlists.len() {
+        return true;
+    }
+
+    let remote_ids: Vec<&str> = remote.playlists.iter().map(|p| p.id.as_str()).collect();
+    let merged_ids: Vec<&str> = merged.playlists.iter().map(|p| p.id.as_str()).collect();
+    if remote_ids != merged_ids {
+        return true;
+    }
+
+    // 歌单内容比对
+    for (rp, mp) in remote.playlists.iter().zip(merged.playlists.iter()) {
+        if rp.name != mp.name || rp.songs.len() != mp.songs.len() {
+            return true;
+        }
+        let r_keys: Vec<String> = rp.songs.iter().map(|s| s.identity().stable_key()).collect();
+        let m_keys: Vec<String> = mp.songs.iter().map(|s| s.identity().stable_key()).collect();
+        if r_keys != m_keys {
+            return true;
+        }
+    }
+
+    // 收藏歌单
+    if remote.favorite_playlists.len() != merged.favorite_playlists.len() {
+        return true;
+    }
+
+    // 最近播放（只比前 50 条）
+    let r_recent: Vec<String> = remote.recent_plays.iter().take(50).map(|r| r.song.identity().stable_key()).collect();
+    let m_recent: Vec<String> = merged.recent_plays.iter().take(50).map(|r| r.song.identity().stable_key()).collect();
+    if r_recent != m_recent {
+        return true;
+    }
+
+    false
+}

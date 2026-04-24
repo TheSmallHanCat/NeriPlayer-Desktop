@@ -1,0 +1,302 @@
+// 歌单/专辑详情页共享样式
+.detail-view {
+  padding: 16px 28px 32px;
+  max-height: 100%;
+  overflow-y: auto;
+}
+
+.detail-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.back-btn {
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-full);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--md-on-surface);
+  transition: background var(--duration-short);
+  flex-shrink: 0;
+
+  &:hover { background: var(--md-surface-container-high); }
+  .material-symbols-rounded { font-size: 24px; }
+}
+
+.header-search {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--md-surface-container);
+  border-radius: var(--radius-full);
+  padding: 0 14px;
+  height: 40px;
+  max-width: 320px;
+}
+
+.search-icon {
+  font-size: 20px;
+  color: var(--md-on-surface-variant);
+  opacity: 0.6;
+}
+
+.search-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--md-on-surface);
+  font-size: 14px;
+
+  &::placeholder { color: var(--md-on-surface-variant); opacity: 0.5; }
+}
+
+// 加载 / 错误 / 空状态
+.state-center {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 300px;
+  gap: 12px;
+  color: var(--md-on-surface-variant);
+  font-size: 14px;
+}
+
+.spinning {
+  font-size: 36px;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.retry-btn {
+  padding: 8px 24px;
+  border-radius: var(--radius-full);
+  background: var(--md-primary);
+  color: var(--md-on-primary);
+  font-size: 14px;
+  font-weight: 500;
+  transition: opacity var(--duration-short);
+
+  &:hover { opacity: 0.9; }
+}
+
+// Hero 区域
+.detail-hero {
+  display: flex;
+  gap: 24px;
+  margin-bottom: 24px;
+  align-items: flex-start;
+}
+
+.hero-cover {
+  width: 180px;
+  height: 180px;
+  border-radius: var(--radius-lg);
+  background: var(--md-surface-variant);
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+
+  img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+}
+
+.hero-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-top: 4px;
+}
+
+.hero-title {
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.3px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.hero-creator {
+  font-size: 14px;
+  color: var(--md-on-surface-variant);
+  font-weight: 500;
+}
+
+.hero-meta {
+  font-size: 13px;
+  color: var(--md-on-surface-variant);
+  opacity: 0.7;
+}
+
+.hero-desc {
+  font-size: 12px;
+  color: var(--md-on-surface-variant);
+  opacity: 0.6;
+  margin-top: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+}
+
+.play-all-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 12px;
+  padding: 10px 24px;
+  border-radius: var(--radius-full);
+  background: var(--md-primary);
+  color: var(--md-on-primary);
+  font-size: 14px;
+  font-weight: 600;
+  transition: opacity var(--duration-short), transform var(--duration-short);
+  width: fit-content;
+
+  .material-symbols-rounded { font-size: 20px; }
+  &:hover { opacity: 0.92; transform: translateY(-1px); }
+  &:active { transform: scale(0.97); }
+}
+
+// 歌曲列表
+.track-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.track-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: background var(--duration-short);
+
+  &:hover { background: var(--md-surface-container); }
+  &.active { background: color-mix(in srgb, var(--md-primary) 8%, transparent); }
+  &.active .track-title { color: var(--md-primary); }
+}
+
+.track-index {
+  width: 28px;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.index-num {
+  font-size: 13px;
+  color: var(--md-on-surface-variant);
+  font-weight: 500;
+}
+
+.playing-icon {
+  font-size: 20px;
+  color: var(--md-primary);
+}
+
+// 音频律动均衡器动画（替代静态 equalizer 图标）
+.equalizer-bars {
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 2px;
+  width: 18px;
+  height: 18px;
+
+  .bar {
+    width: 3px;
+    border-radius: 1.5px;
+    background: var(--md-primary);
+    animation: eq-bounce 0.8s ease-in-out infinite alternate;
+
+    &:nth-child(1) { height: 30%; animation-delay: 0s; }
+    &:nth-child(2) { height: 60%; animation-delay: 0.2s; }
+    &:nth-child(3) { height: 45%; animation-delay: 0.4s; }
+  }
+}
+
+@keyframes eq-bounce {
+  0%   { height: 20%; }
+  50%  { height: 90%; }
+  100% { height: 30%; }
+}
+
+.track-cover {
+  width: 44px;
+  height: 44px;
+  border-radius: var(--radius-sm);
+  background: var(--md-surface-variant);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  overflow: hidden;
+
+  img { width: 100%; height: 100%; object-fit: cover; }
+  .material-symbols-rounded { font-size: 22px; opacity: 0.5; }
+}
+
+// B站视频封面（横向）
+.track-cover-wide {
+  width: 80px;
+  height: 50px;
+  border-radius: var(--radius-sm);
+  background: var(--md-surface-variant);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  overflow: hidden;
+
+  img { width: 100%; height: 100%; object-fit: cover; }
+  .material-symbols-rounded { font-size: 22px; opacity: 0.5; }
+}
+
+.track-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.track-title {
+  font-size: 14px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: color var(--duration-short);
+}
+
+.track-meta {
+  font-size: 12px;
+  color: var(--md-on-surface-variant);
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.track-duration {
+  font-size: 12px;
+  color: var(--md-on-surface-variant);
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}

@@ -1,0 +1,1675 @@
+<script setup lang="ts">
+import { ref, computed, onMounted } from 'vue'
+import { storeToRefs } from 'pinia'
+import { useI18n } from 'vue-i18n'
+import { SUPPORTED_LOCALES, setLocaleWithTransition } from '@/i18n'
+import { open as shellOpen } from '@tauri-apps/plugin-shell'
+import { useSettingsStore } from '@/stores/settings'
+import { useAuthStore } from '@/stores/auth'
+import { useSyncStore } from '@/stores/sync'
+import { switchThemeWithRipple, type ThemeMode } from '@/utils/theme'
+import { THEME_COLORS, getSwatchColor, applyThemeColor, getSavedThemeColor, switchThemeColorWithRipple } from '@/utils/themeColor'
+
+const { t, locale } = useI18n()
+const settings = useSettingsStore()
+const auth = useAuthStore()
+const syncStore = useSyncStore()
+const {
+  darkMode, themeColor: selectedColor,
+  defaultScreen, showCoverBadge, showNowPlayingTitle, showToolbarDock,
+  showQualitySwitch, showAudioCodec, showAudioSpec, lyricFontScale,
+  crossfade, normalizeVolume,
+  fadeIn, fadeInDuration, fadeOutDuration,
+  crossfadeNext, crossfadeInDuration, crossfadeOutDuration,
+  keepProgress, keepPlaybackMode,
+  showTranslation, lyricBlur, lyricBlurAmount,
+  cloudMusicOffset, qqMusicOffset,
+  advancedLyrics, dynamicBackground, audioReactive,
+  coverBlurBg, coverBlurAmount, coverBlurDarken,
+  neteaseQuality, youtubeQuality, biliQuality,
+  maxCacheSize, downloadNameTemplate,
+} = storeToRefs(settings)
+
+// 折叠过渡 hooks
+function onExpandEnter(el: Element) {
+  const e = el as HTMLElement
+  e.style.overflow = 'hidden'
+  e.style.height = '0'
+  // 强制 reflow
+  void e.offsetHeight
+  e.style.transition = 'height 300ms cubic-bezier(0.2, 0, 0, 1), opacity 250ms ease'
+  e.style.height = e.scrollHeight + 'px'
+  e.style.opacity = '1'
+}
+function onExpandAfterEnter(el: Element) {
+  const e = el as HTMLElement
+  e.style.height = ''
+  e.style.overflow = ''
+  e.style.transition = ''
+}
+function onExpandLeave(el: Element) {
+  const e = el as HTMLElement
+  e.style.overflow = 'hidden'
+  e.style.height = e.scrollHeight + 'px'
+  void e.offsetHeight
+  e.style.transition = 'height 250ms cubic-bezier(0.3, 0, 0.8, 0.15), opacity 200ms ease'
+  e.style.height = '0'
+  e.style.opacity = '0'
+}
+function onExpandAfterLeave(el: Element) {
+  const e = el as HTMLElement
+  e.style.height = ''
+  e.style.overflow = ''
+  e.style.transition = ''
+  e.style.opacity = ''
+}
+
+const presetColors = THEME_COLORS.map(c => ({
+  key: c.key,
+  color: c.dark['--md-primary'],
+}))
+
+const activeColorKey = ref(getSavedThemeColor())
+
+function handleColorSwitch(key: string, event: MouseEvent) {
+  activeColorKey.value = key
+  selectedColor.value = key
+  const rect = (event.currentTarget as HTMLElement).getBoundingClientRect()
+  const x = rect.left + rect.width / 2
+  const y = rect.top + rect.height / 2
+  switchThemeColorWithRipple(key, x, y)
+}
+
+function toggleSection(key: string) {
+  if (expandedSections.value.has(key)) expandedSections.value.delete(key)
+  else expandedSections.value.add(key)
+}
+function isExpanded(key: string) { return expandedSections.value.has(key) }
+
+const darkModeOptions = computed(() => [
+  { value: 'system', label: t('settings.dark_mode_system'), icon: 'brightness_auto' },
+  { value: 'dark', label: t('settings.dark_mode_on'), icon: 'dark_mode' },
+  { value: 'light', label: t('settings.dark_mode_off'), icon: 'light_mode' },
+])
+
+function handleDarkModeSwitch(mode: ThemeMode, event: MouseEvent) {
+  darkMode.value = mode as any
+  const rect = (event.currentTarget as HTMLElement).getBoundingClientRect()
+  const x = rect.left + rect.width / 2
+  const y = rect.top + rect.height / 2
+  switchThemeWithRipple(mode, x, y)
+}
+
+function handleLocaleSwitch(code: string, event: MouseEvent) {
+  const rect = (event.currentTarget as HTMLElement).getBoundingClientRect()
+  const x = rect.left + rect.width / 2
+  const y = rect.top + rect.height / 2
+  setLocaleWithTransition(code, x, y)
+}
+
+const defaultScreenOptions = computed(() => [
+  { value: 'home', label: t('nav.home') },
+  { value: 'explore', label: t('nav.explore') },
+  { value: 'library', label: t('nav.library') },
+])
+
+const neteaseQualityOptions = computed(() => [
+  { value: 'standard', label: t('settings.q_standard') },
+  { value: 'high', label: t('settings.q_high') },
+  { value: 'exhigh', label: t('settings.q_exhigh') },
+  { value: 'lossless', label: t('settings.q_lossless') },
+  { value: 'hires', label: t('settings.q_hires') },
+  { value: 'jyeffect', label: t('settings.q_surround') },
+  { value: 'sky', label: t('settings.q_sky') },
+  { value: 'jymaster', label: t('settings.q_master') },
+])
+
+const youtubeQualityOptions = computed(() => [
+  { value: 'low', label: t('settings.q_low') },
+  { value: 'medium', label: t('settings.q_medium') },
+  { value: 'high', label: t('settings.q_high_yt') },
+  { value: 'very_high', label: t('settings.q_very_high') },
+])
+
+const biliQualityOptions = computed(() => [
+  { value: 'low', label: t('settings.q_smooth') },
+  { value: 'medium', label: t('settings.q_standard') },
+  { value: 'high', label: t('settings.q_good') },
+  { value: 'lossless', label: t('settings.q_lossless') },
+  { value: 'hires', label: t('settings.q_hires') },
+  { value: 'dolby', label: t('settings.q_dolby') },
+])
+
+// 折叠区段控制
+const expandedSections = ref<Set<string>>(new Set())
+
+// 启动时检查登录状态
+onMounted(() => {
+  auth.checkStatus()
+  syncStore.loadConfigs()
+})
+
+// GitHub 同步两阶段引导（对齐 Android）
+const showGitHubDialog = ref(false)
+const githubPhase = ref<1 | 2>(1) // Phase 1: token 验证, Phase 2: 仓库选择
+const githubToken = ref('')
+const githubUsername = ref('')
+const githubIsValidating = ref(false)
+const githubRepoMode = ref<'create' | 'existing'>('create')
+const githubNewRepoName = ref('neriplayer-backup')
+const githubExistingRepo = ref('') // owner/repo 格式
+const githubIsSettingRepo = ref(false)
+
+function openGitHubSetup() {
+  githubPhase.value = 1
+  githubToken.value = ''
+  githubUsername.value = ''
+  githubRepoMode.value = 'create'
+  githubNewRepoName.value = 'neriplayer-backup'
+  githubExistingRepo.value = ''
+  syncStore.dialogError = null
+  showGitHubDialog.value = true
+}
+
+async function githubValidateToken() {
+  if (!githubToken.value.trim()) return
+  githubIsValidating.value = true
+  syncStore.dialogError = null
+  const username = await syncStore.validateGitHubToken(githubToken.value)
+  githubIsValidating.value = false
+  if (username) {
+    githubUsername.value = username
+    githubPhase.value = 2
+  }
+}
+
+async function githubFinishSetup() {
+  githubIsSettingRepo.value = true
+  syncStore.dialogError = null
+  let ok = false
+  if (githubRepoMode.value === 'create') {
+    ok = await syncStore.createGitHubRepo(githubNewRepoName.value || 'neriplayer-backup')
+  } else {
+    // 解析 owner/repo 格式
+    const parts = githubExistingRepo.value.split('/')
+    if (parts.length === 2 && parts[0] && parts[1]) {
+      ok = await syncStore.useExistingGitHubRepo(parts[0], parts[1])
+    } else {
+      syncStore.dialogError = t('settings.github_repo_format_hint')
+    }
+  }
+  githubIsSettingRepo.value = false
+  if (ok) showGitHubDialog.value = false
+}
+
+function openGitHubTokenPage() {
+  shellOpen('https://github.com/settings/tokens/new?scopes=repo&description=NeriPlayer%20Backup')
+}
+
+// WebDAV 同步对话框状态
+const showWebDavDialog = ref(false)
+const webdavUrl = ref('')
+const webdavUsername = ref('')
+const webdavPassword = ref('')
+const webdavBasePath = ref('')
+const webdavConfiguring = ref(false)
+
+async function configureWebDav() {
+  if (!webdavUrl.value.trim() || !webdavUsername.value.trim()) return
+  webdavConfiguring.value = true
+  const ok = await syncStore.configureWebDav(
+    webdavUrl.value, webdavUsername.value, webdavPassword.value, webdavBasePath.value || undefined,
+  )
+  webdavConfiguring.value = false
+  if (ok) {
+    showWebDavDialog.value = false
+    webdavUrl.value = ''
+    webdavUsername.value = ''
+    webdavPassword.value = ''
+    webdavBasePath.value = ''
+  }
+}
+
+function formatSyncTime(ms: number): string {
+  if (!ms) return ''
+  return new Date(ms).toLocaleString()
+}
+
+// 平台账号配置
+const platformAccounts = computed(() => [
+  { key: 'netease', label: t('settings.netease_account'), iconSvg: '/icons/ic_netease.svg', auth: auth.netease, login: auth.loginNetease },
+  { key: 'bilibili', label: t('settings.bilibili_account'), iconSvg: '/icons/ic_bilibili.svg', auth: auth.bilibili, login: auth.loginBilibili },
+  { key: 'youtube', label: t('settings.youtube_account'), iconSvg: '/icons/ic_youtube.svg', auth: auth.youtube, login: auth.loginYoutube },
+])
+
+// 退出登录确认对话框
+const showLogoutConfirm = ref(false)
+const logoutTargetKey = ref('')
+const logoutTargetLabel = ref('')
+
+function requestLogout(key: string, label: string) {
+  logoutTargetKey.value = key
+  logoutTargetLabel.value = label
+  showLogoutConfirm.value = true
+}
+
+async function confirmLogout() {
+  showLogoutConfirm.value = false
+  await auth.logout(logoutTargetKey.value)
+}
+
+// 清除 GitHub 配置确认
+const showClearGitHubConfirm = ref(false)
+async function confirmClearGitHub() {
+  showClearGitHubConfirm.value = false
+  await syncStore.disconnectGitHub()
+}
+</script>
+
+<template>
+  <div class="settings-view">
+    <h1 class="page-title">{{ t('settings.title') }}</h1>
+
+    <!-- 账号 -->
+    <div class="section-label">
+      <span class="material-symbols-rounded" style="font-size: 18px">account_circle</span>
+      <span>{{ t('settings.accounts') }}</span>
+    </div>
+
+    <div
+      v-for="account in platformAccounts"
+      :key="account.key"
+      class="setting-card account-card"
+    >
+      <div class="setting-icon-wrap">
+        <span class="platform-icon" :style="{ maskImage: `url(${account.iconSvg})` }"></span>
+      </div>
+      <div class="setting-info">
+        <div class="setting-title">{{ account.label }}</div>
+        <div class="setting-desc" v-if="account.auth.loggedIn">
+          {{ t('settings.signed_in_as', { name: account.auth.nickname || '—' }) }}
+        </div>
+        <div class="setting-desc" v-else-if="auth.loggingIn === account.key">
+          {{ t('settings.signing_in') }}
+        </div>
+      </div>
+      <template v-if="account.auth.loggedIn">
+        <img
+          v-if="account.auth.avatarUrl"
+          :src="account.auth.avatarUrl"
+          class="account-avatar"
+          referrerpolicy="no-referrer"
+        />
+        <button class="account-logout-btn" @click="requestLogout(account.key, account.label)">
+          <span class="material-symbols-rounded" style="font-size: 16px">logout</span>
+          {{ t('settings.sign_out') }}
+        </button>
+      </template>
+      <template v-else>
+        <button
+          class="account-login-btn"
+          :disabled="auth.loggingIn === account.key"
+          @click="account.login()"
+        >
+          <span v-if="auth.loggingIn === account.key" class="material-symbols-rounded spin" style="font-size: 18px">progress_activity</span>
+          <span v-else>{{ t('settings.sign_in') }}</span>
+        </button>
+      </template>
+    </div>
+
+    <!-- 外观 -->
+    <div class="section-label">
+      <span class="material-symbols-rounded" style="font-size: 18px">palette</span>
+      <span>{{ t('settings.appearance') }}</span>
+    </div>
+
+    <div class="setting-card">
+      <div class="setting-icon-wrap">
+        <span class="material-symbols-rounded filled">dark_mode</span>
+      </div>
+      <div class="setting-info">
+        <div class="setting-title">{{ t('settings.dark_mode') }}</div>
+        <div class="setting-desc">{{ darkModeOptions.find(o => o.value === darkMode)?.label }}</div>
+      </div>
+      <div class="dark-mode-pills">
+        <button
+          v-for="opt in darkModeOptions"
+          :key="opt.value"
+          class="pill"
+          :class="{ active: darkMode === opt.value }"
+          @click="handleDarkModeSwitch(opt.value as ThemeMode, $event)"
+        >
+          <span class="material-symbols-rounded" style="font-size: 16px">{{ opt.icon }}</span>
+        </button>
+      </div>
+    </div>
+
+    <div class="setting-card">
+      <div class="setting-icon-wrap">
+        <span class="material-symbols-rounded filled">format_paint</span>
+      </div>
+      <div class="setting-info">
+        <div class="setting-title">{{ t('settings.theme_color') }}</div>
+        <div class="color-row">
+          <button
+            v-for="c in presetColors" :key="c.key"
+            class="color-dot"
+            :class="{ selected: activeColorKey === c.key }"
+            :style="{ background: c.color }"
+            @click="handleColorSwitch(c.key, $event)"
+          >
+            <span v-if="activeColorKey === c.key" class="material-symbols-rounded" style="font-size: 16px; color: white">check</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 个性化 -->
+    <div class="section-label clickable" @click="toggleSection('personal')">
+      <span class="material-symbols-rounded" style="font-size: 18px">tune</span>
+      <span>{{ t('settings.personalization') }}</span>
+      <span class="material-symbols-rounded section-arrow" :class="{ expanded: isExpanded('personal') }">expand_more</span>
+    </div>
+
+    <Transition @enter="onExpandEnter" @after-enter="onExpandAfterEnter" @leave="onExpandLeave" @after-leave="onExpandAfterLeave"><div v-if="isExpanded('personal')">
+      <div class="setting-card">
+        <div class="setting-icon-wrap"><span class="material-symbols-rounded">home</span></div>
+        <div class="setting-info">
+          <div class="setting-title">{{ t('settings.default_screen') }}</div>
+          <div class="setting-desc">{{ defaultScreenOptions.find(o => o.value === defaultScreen)?.label }}</div>
+        </div>
+        <div class="chip-row">
+          <button v-for="o in defaultScreenOptions" :key="o.value" class="m3-chip" :class="{ active: defaultScreen === o.value }" @click="defaultScreen = o.value as any">{{ o.label }}</button>
+        </div>
+      </div>
+
+      <div class="setting-card">
+        <div class="setting-icon-wrap"><span class="material-symbols-rounded">badge</span></div>
+        <div class="setting-info">
+          <div class="setting-title">{{ t('settings.cover_badge') }}</div>
+          <div class="setting-desc">{{ t('settings.cover_badge_desc') }}</div>
+        </div>
+        <label class="m3-switch"><input type="checkbox" v-model="showCoverBadge" /><span class="track"><span class="thumb"><span v-if="showCoverBadge" class="material-symbols-rounded" style="font-size: 14px">check</span></span></span></label>
+      </div>
+
+      <div class="setting-card">
+        <div class="setting-icon-wrap"><span class="material-symbols-rounded">title</span></div>
+        <div class="setting-info">
+          <div class="setting-title">{{ t('settings.np_title') }}</div>
+          <div class="setting-desc">{{ t('settings.np_title_desc') }}</div>
+        </div>
+        <label class="m3-switch"><input type="checkbox" v-model="showNowPlayingTitle" /><span class="track"><span class="thumb"><span v-if="showNowPlayingTitle" class="material-symbols-rounded" style="font-size: 14px">check</span></span></span></label>
+      </div>
+
+      <div class="setting-card">
+        <div class="setting-icon-wrap"><span class="material-symbols-rounded">dock_to_bottom</span></div>
+        <div class="setting-info">
+          <div class="setting-title">{{ t('settings.np_toolbar') }}</div>
+          <div class="setting-desc">{{ t('settings.np_toolbar_desc') }}</div>
+        </div>
+        <label class="m3-switch"><input type="checkbox" v-model="showToolbarDock" /><span class="track"><span class="thumb"><span v-if="showToolbarDock" class="material-symbols-rounded" style="font-size: 14px">check</span></span></span></label>
+      </div>
+
+      <div class="setting-card">
+        <div class="setting-icon-wrap"><span class="material-symbols-rounded">high_quality</span></div>
+        <div class="setting-info">
+          <div class="setting-title">{{ t('settings.quality_switch') }}</div>
+          <div class="setting-desc">{{ t('settings.quality_switch_desc') }}</div>
+        </div>
+        <label class="m3-switch"><input type="checkbox" v-model="showQualitySwitch" /><span class="track"><span class="thumb"><span v-if="showQualitySwitch" class="material-symbols-rounded" style="font-size: 14px">check</span></span></span></label>
+      </div>
+
+      <div class="setting-card">
+        <div class="setting-icon-wrap"><span class="material-symbols-rounded">audio_file</span></div>
+        <div class="setting-info">
+          <div class="setting-title">{{ t('settings.audio_codec') }}</div>
+          <div class="setting-desc">{{ t('settings.audio_codec_desc') }}</div>
+        </div>
+        <label class="m3-switch"><input type="checkbox" v-model="showAudioCodec" /><span class="track"><span class="thumb"><span v-if="showAudioCodec" class="material-symbols-rounded" style="font-size: 14px">check</span></span></span></label>
+      </div>
+
+      <div class="setting-card">
+        <div class="setting-icon-wrap"><span class="material-symbols-rounded">equalizer</span></div>
+        <div class="setting-info">
+          <div class="setting-title">{{ t('settings.audio_spec') }}</div>
+          <div class="setting-desc">{{ t('settings.audio_spec_desc') }}</div>
+        </div>
+        <label class="m3-switch"><input type="checkbox" v-model="showAudioSpec" /><span class="track"><span class="thumb"><span v-if="showAudioSpec" class="material-symbols-rounded" style="font-size: 14px">check</span></span></span></label>
+      </div>
+
+      <div class="setting-card">
+        <div class="setting-icon-wrap"><span class="material-symbols-rounded">format_size</span></div>
+        <div class="setting-info">
+          <div class="setting-title">{{ t('settings.lyric_font_size') }}</div>
+          <div class="setting-desc">{{ lyricFontScale.toFixed(1) }}x</div>
+        </div>
+        <input type="range" class="m3-slider" v-model.number="lyricFontScale" min="0.5" max="1.5" step="0.1" />
+      </div>
+    </div></Transition>
+
+    <!-- 播放 -->
+    <div class="section-label clickable" @click="toggleSection('playback')">
+      <span class="material-symbols-rounded" style="font-size: 18px">play_circle</span>
+      <span>{{ t('settings.playback') }}</span>
+      <span class="material-symbols-rounded section-arrow" :class="{ expanded: isExpanded('playback') }">expand_more</span>
+    </div>
+
+    <div class="setting-card">
+      <div class="setting-icon-wrap"><span class="material-symbols-rounded">swap_horiz</span></div>
+      <div class="setting-info">
+        <div class="setting-title">{{ t('settings.crossfade') }}</div>
+        <div class="setting-desc">{{ t('settings.crossfade_desc') }}</div>
+      </div>
+      <label class="m3-switch"><input type="checkbox" v-model="crossfade" /><span class="track"><span class="thumb"><span v-if="crossfade" class="material-symbols-rounded" style="font-size: 14px">check</span></span></span></label>
+    </div>
+
+    <div class="setting-card">
+      <div class="setting-icon-wrap"><span class="material-symbols-rounded">graphic_eq</span></div>
+      <div class="setting-info">
+        <div class="setting-title">{{ t('settings.normalize') }}</div>
+        <div class="setting-desc">{{ t('settings.normalize_desc') }}</div>
+      </div>
+      <label class="m3-switch"><input type="checkbox" v-model="normalizeVolume" /><span class="track"><span class="thumb"><span v-if="normalizeVolume" class="material-symbols-rounded" style="font-size: 14px">check</span></span></span></label>
+    </div>
+
+    <Transition @enter="onExpandEnter" @after-enter="onExpandAfterEnter" @leave="onExpandLeave" @after-leave="onExpandAfterLeave"><div v-if="isExpanded('playback')">
+      <div class="setting-card">
+        <div class="setting-icon-wrap"><span class="material-symbols-rounded">volume_up</span></div>
+        <div class="setting-info">
+          <div class="setting-title">{{ t('settings.fade_in') }}</div>
+          <div class="setting-desc">{{ t('settings.fade_in_desc') }}</div>
+        </div>
+        <label class="m3-switch"><input type="checkbox" v-model="fadeIn" /><span class="track"><span class="thumb"><span v-if="fadeIn" class="material-symbols-rounded" style="font-size: 14px">check</span></span></span></label>
+      </div>
+
+      <template v-if="fadeIn">
+        <div class="setting-card sub-card">
+          <div class="setting-info">
+            <div class="setting-title">{{ t('settings.fade_in_duration') }}</div>
+            <div class="setting-desc">{{ fadeInDuration }}ms</div>
+          </div>
+          <input type="range" class="m3-slider" v-model.number="fadeInDuration" min="0" max="3000" step="100" />
+        </div>
+        <div class="setting-card sub-card">
+          <div class="setting-info">
+            <div class="setting-title">{{ t('settings.fade_out_duration') }}</div>
+            <div class="setting-desc">{{ fadeOutDuration }}ms</div>
+          </div>
+          <input type="range" class="m3-slider" v-model.number="fadeOutDuration" min="0" max="3000" step="100" />
+        </div>
+      </template>
+
+      <div class="setting-card">
+        <div class="setting-icon-wrap"><span class="material-symbols-rounded">sync_alt</span></div>
+        <div class="setting-info">
+          <div class="setting-title">{{ t('settings.crossfade_next') }}</div>
+          <div class="setting-desc">{{ t('settings.crossfade_next_desc') }}</div>
+        </div>
+        <label class="m3-switch"><input type="checkbox" v-model="crossfadeNext" /><span class="track"><span class="thumb"><span v-if="crossfadeNext" class="material-symbols-rounded" style="font-size: 14px">check</span></span></span></label>
+      </div>
+
+      <template v-if="crossfadeNext">
+        <div class="setting-card sub-card">
+          <div class="setting-info">
+            <div class="setting-title">{{ t('settings.crossfade_in_duration') }}</div>
+            <div class="setting-desc">{{ crossfadeInDuration }}ms</div>
+          </div>
+          <input type="range" class="m3-slider" v-model.number="crossfadeInDuration" min="0" max="3000" step="100" />
+        </div>
+        <div class="setting-card sub-card">
+          <div class="setting-info">
+            <div class="setting-title">{{ t('settings.crossfade_out_duration') }}</div>
+            <div class="setting-desc">{{ crossfadeOutDuration }}ms</div>
+          </div>
+          <input type="range" class="m3-slider" v-model.number="crossfadeOutDuration" min="0" max="3000" step="100" />
+        </div>
+      </template>
+
+      <div class="setting-card">
+        <div class="setting-icon-wrap"><span class="material-symbols-rounded">history</span></div>
+        <div class="setting-info">
+          <div class="setting-title">{{ t('settings.keep_progress') }}</div>
+          <div class="setting-desc">{{ t('settings.keep_progress_desc') }}</div>
+        </div>
+        <label class="m3-switch"><input type="checkbox" v-model="keepProgress" /><span class="track"><span class="thumb"><span v-if="keepProgress" class="material-symbols-rounded" style="font-size: 14px">check</span></span></span></label>
+      </div>
+
+      <div class="setting-card">
+        <div class="setting-icon-wrap"><span class="material-symbols-rounded">repeat</span></div>
+        <div class="setting-info">
+          <div class="setting-title">{{ t('settings.keep_mode') }}</div>
+          <div class="setting-desc">{{ t('settings.keep_mode_desc') }}</div>
+        </div>
+        <label class="m3-switch"><input type="checkbox" v-model="keepPlaybackMode" /><span class="track"><span class="thumb"><span v-if="keepPlaybackMode" class="material-symbols-rounded" style="font-size: 14px">check</span></span></span></label>
+      </div>
+    </div></Transition>
+
+    <!-- 歌词 -->
+    <div class="section-label clickable" @click="toggleSection('lyrics')">
+      <span class="material-symbols-rounded" style="font-size: 18px">lyrics</span>
+      <span>{{ t('settings.lyrics') }}</span>
+      <span class="material-symbols-rounded section-arrow" :class="{ expanded: isExpanded('lyrics') }">expand_more</span>
+    </div>
+
+    <div class="setting-card">
+      <div class="setting-icon-wrap"><span class="material-symbols-rounded">translate</span></div>
+      <div class="setting-info">
+        <div class="setting-title">{{ t('settings.show_translation') }}</div>
+        <div class="setting-desc">{{ t('settings.show_translation_desc') }}</div>
+      </div>
+      <label class="m3-switch"><input type="checkbox" v-model="showTranslation" /><span class="track"><span class="thumb"><span v-if="showTranslation" class="material-symbols-rounded" style="font-size: 14px">check</span></span></span></label>
+    </div>
+
+    <div class="setting-card">
+      <div class="setting-icon-wrap"><span class="material-symbols-rounded">blur_on</span></div>
+      <div class="setting-info">
+        <div class="setting-title">{{ t('settings.lyric_blur') }}</div>
+        <div class="setting-desc">{{ t('settings.lyric_blur_desc') }}</div>
+      </div>
+      <label class="m3-switch"><input type="checkbox" v-model="lyricBlur" /><span class="track"><span class="thumb"><span v-if="lyricBlur" class="material-symbols-rounded" style="font-size: 14px">check</span></span></span></label>
+    </div>
+
+    <Transition @enter="onExpandEnter" @after-enter="onExpandAfterEnter" @leave="onExpandLeave" @after-leave="onExpandAfterLeave"><div v-if="isExpanded('lyrics')">
+      <div v-if="lyricBlur" class="setting-card sub-card">
+        <div class="setting-info">
+          <div class="setting-title">{{ t('settings.blur_strength') }}</div>
+          <div class="setting-desc">{{ lyricBlurAmount.toFixed(1) }}px</div>
+        </div>
+        <input type="range" class="m3-slider" v-model.number="lyricBlurAmount" min="0" max="8" step="0.5" />
+      </div>
+
+      <div class="setting-card">
+        <div class="setting-icon-wrap"><span class="material-symbols-rounded">music_note</span></div>
+        <div class="setting-info">
+          <div class="setting-title">{{ t('settings.netease_offset') }}</div>
+          <div class="setting-desc">{{ cloudMusicOffset >= 0 ? '+' : '' }}{{ cloudMusicOffset }}ms</div>
+        </div>
+        <input type="range" class="m3-slider" v-model.number="cloudMusicOffset" min="-2000" max="2000" step="50" />
+      </div>
+
+      <div class="setting-card">
+        <div class="setting-icon-wrap"><span class="material-symbols-rounded">music_note</span></div>
+        <div class="setting-info">
+          <div class="setting-title">{{ t('settings.qq_offset') }}</div>
+          <div class="setting-desc">{{ qqMusicOffset >= 0 ? '+' : '' }}{{ qqMusicOffset }}ms</div>
+        </div>
+        <input type="range" class="m3-slider" v-model.number="qqMusicOffset" min="-2000" max="2000" step="50" />
+      </div>
+    </div></Transition>
+
+    <!-- 动效 & 视觉 -->
+    <div class="section-label clickable" @click="toggleSection('effects')">
+      <span class="material-symbols-rounded" style="font-size: 18px">auto_awesome</span>
+      <span>{{ t('settings.effects') }}</span>
+      <span class="material-symbols-rounded section-arrow" :class="{ expanded: isExpanded('effects') }">expand_more</span>
+    </div>
+
+    <div class="setting-card">
+      <div class="setting-icon-wrap"><span class="material-symbols-rounded">animation</span></div>
+      <div class="setting-info">
+        <div class="setting-title">{{ t('settings.advanced_lyrics') }}</div>
+        <div class="setting-desc">{{ t('settings.advanced_lyrics_desc') }}</div>
+      </div>
+      <label class="m3-switch"><input type="checkbox" v-model="advancedLyrics" /><span class="track"><span class="thumb"><span v-if="advancedLyrics" class="material-symbols-rounded" style="font-size: 14px">check</span></span></span></label>
+    </div>
+
+    <div class="setting-card">
+      <div class="setting-icon-wrap"><span class="material-symbols-rounded">wallpaper</span></div>
+      <div class="setting-info">
+        <div class="setting-title">{{ t('settings.dynamic_bg') }}</div>
+        <div class="setting-desc">{{ t('settings.dynamic_bg_desc') }}</div>
+      </div>
+      <label class="m3-switch"><input type="checkbox" v-model="dynamicBackground" /><span class="track"><span class="thumb"><span v-if="dynamicBackground" class="material-symbols-rounded" style="font-size: 14px">check</span></span></span></label>
+    </div>
+
+    <Transition @enter="onExpandEnter" @after-enter="onExpandAfterEnter" @leave="onExpandLeave" @after-leave="onExpandAfterLeave"><div v-if="isExpanded('effects')">
+      <div v-if="dynamicBackground" class="setting-card sub-card">
+        <div class="setting-icon-wrap"><span class="material-symbols-rounded">graphic_eq</span></div>
+        <div class="setting-info">
+          <div class="setting-title">{{ t('settings.audio_reactive') }}</div>
+          <div class="setting-desc">{{ t('settings.audio_reactive_desc') }}</div>
+        </div>
+        <label class="m3-switch"><input type="checkbox" v-model="audioReactive" /><span class="track"><span class="thumb"><span v-if="audioReactive" class="material-symbols-rounded" style="font-size: 14px">check</span></span></span></label>
+      </div>
+
+      <div v-if="!dynamicBackground" class="setting-card">
+        <div class="setting-icon-wrap"><span class="material-symbols-rounded">blur_circular</span></div>
+        <div class="setting-info">
+          <div class="setting-title">{{ t('settings.cover_blur') }}</div>
+          <div class="setting-desc">{{ t('settings.cover_blur_desc') }}</div>
+        </div>
+        <label class="m3-switch"><input type="checkbox" v-model="coverBlurBg" /><span class="track"><span class="thumb"><span v-if="coverBlurBg" class="material-symbols-rounded" style="font-size: 14px">check</span></span></span></label>
+      </div>
+
+      <template v-if="!dynamicBackground && coverBlurBg">
+        <div class="setting-card sub-card">
+          <div class="setting-info">
+            <div class="setting-title">{{ t('settings.blur_amount') }}</div>
+            <div class="setting-desc">{{ coverBlurAmount.toFixed(1) }}</div>
+          </div>
+          <input type="range" class="m3-slider" v-model.number="coverBlurAmount" min="0" max="500" step="10" />
+        </div>
+        <div class="setting-card sub-card">
+          <div class="setting-info">
+            <div class="setting-title">{{ t('settings.bg_darken') }}</div>
+            <div class="setting-desc">{{ (coverBlurDarken * 100).toFixed(0) }}%</div>
+          </div>
+          <input type="range" class="m3-slider" v-model.number="coverBlurDarken" min="0" max="0.8" step="0.05" />
+        </div>
+      </template>
+    </div></Transition>
+
+    <!-- 音质 -->
+    <div class="section-label clickable" @click="toggleSection('quality')">
+      <span class="material-symbols-rounded" style="font-size: 18px">headphones</span>
+      <span>{{ t('settings.quality') }}</span>
+      <span class="material-symbols-rounded section-arrow" :class="{ expanded: isExpanded('quality') }">expand_more</span>
+    </div>
+
+    <Transition @enter="onExpandEnter" @after-enter="onExpandAfterEnter" @leave="onExpandLeave" @after-leave="onExpandAfterLeave"><div v-if="isExpanded('quality')">
+      <div class="setting-card quality-card">
+        <div class="setting-icon-wrap"><span class="material-symbols-rounded">cloud</span></div>
+        <div class="setting-info">
+          <div class="setting-title">{{ t('settings.netease_quality') }}</div>
+          <div class="chip-wrap">
+            <button v-for="o in neteaseQualityOptions" :key="o.value" class="m3-chip sm" :class="{ active: neteaseQuality === o.value }" @click="neteaseQuality = o.value">{{ o.label }}</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="setting-card quality-card">
+        <div class="setting-icon-wrap"><span class="material-symbols-rounded">smart_display</span></div>
+        <div class="setting-info">
+          <div class="setting-title">{{ t('settings.youtube_quality') }}</div>
+          <div class="chip-wrap">
+            <button v-for="o in youtubeQualityOptions" :key="o.value" class="m3-chip sm" :class="{ active: youtubeQuality === o.value }" @click="youtubeQuality = o.value">{{ o.label }}</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="setting-card quality-card">
+        <div class="setting-icon-wrap"><span class="material-symbols-rounded">play_circle</span></div>
+        <div class="setting-info">
+          <div class="setting-title">{{ t('settings.bili_quality') }}</div>
+          <div class="chip-wrap">
+            <button v-for="o in biliQualityOptions" :key="o.value" class="m3-chip sm" :class="{ active: biliQuality === o.value }" @click="biliQuality = o.value">{{ o.label }}</button>
+          </div>
+        </div>
+      </div>
+    </div></Transition>
+
+    <!-- 存储 & 缓存 -->
+    <div class="section-label clickable" @click="toggleSection('storage')">
+      <span class="material-symbols-rounded" style="font-size: 18px">folder</span>
+      <span>{{ t('settings.storage') }}</span>
+      <span class="material-symbols-rounded section-arrow" :class="{ expanded: isExpanded('storage') }">expand_more</span>
+    </div>
+
+    <Transition @enter="onExpandEnter" @after-enter="onExpandAfterEnter" @leave="onExpandLeave" @after-leave="onExpandAfterLeave"><div v-if="isExpanded('storage')">
+      <div class="setting-card">
+        <div class="setting-icon-wrap"><span class="material-symbols-rounded">sd_storage</span></div>
+        <div class="setting-info">
+          <div class="setting-title">{{ t('settings.cache_limit') }}</div>
+          <div class="setting-desc">{{ maxCacheSize >= 1024 ? (maxCacheSize / 1024).toFixed(1) + ' GB' : maxCacheSize + ' MB' }}</div>
+        </div>
+        <input type="range" class="m3-slider" v-model.number="maxCacheSize" min="256" max="10240" step="256" />
+      </div>
+
+      <div class="setting-card">
+        <div class="setting-icon-wrap"><span class="material-symbols-rounded">text_fields</span></div>
+        <div class="setting-info">
+          <div class="setting-title">{{ t('settings.download_format') }}</div>
+          <div class="setting-desc">{{ downloadNameTemplate }}</div>
+        </div>
+        <span class="material-symbols-rounded" style="font-size: 20px; opacity: 0.3; cursor: pointer">edit</span>
+      </div>
+
+      <div class="setting-card" style="cursor: pointer" @click="syncStore.clearCache()">
+        <div class="setting-icon-wrap"><span class="material-symbols-rounded">delete_sweep</span></div>
+        <div class="setting-info">
+          <div class="setting-title">{{ t('settings.clear_cache') }}</div>
+          <div class="setting-desc">{{ t('settings.clear_cache_desc') }}</div>
+        </div>
+        <span class="material-symbols-rounded" style="font-size: 20px; opacity: 0.3">chevron_right</span>
+      </div>
+    </div></Transition>
+
+    <!-- 备份 & 恢复 -->
+    <div class="section-label clickable" @click="toggleSection('backup')">
+      <span class="material-symbols-rounded" style="font-size: 18px">cloud_sync</span>
+      <span>{{ t('settings.backup') }}</span>
+      <span class="material-symbols-rounded section-arrow" :class="{ expanded: isExpanded('backup') }">expand_more</span>
+    </div>
+
+    <Transition @enter="onExpandEnter" @after-enter="onExpandAfterEnter" @leave="onExpandLeave" @after-leave="onExpandAfterLeave"><div v-if="isExpanded('backup')">
+
+      <!-- GitHub 同步 -->
+      <template v-if="!syncStore.github.configured">
+        <!-- 未配置：单行入口 -->
+        <div class="setting-card" style="cursor: pointer" @click="openGitHubSetup">
+          <div class="setting-icon-wrap"><span class="material-symbols-rounded">cloud_sync</span></div>
+          <div class="setting-info">
+            <div class="setting-title">{{ t('settings.github_sync') }}</div>
+            <div class="setting-desc">{{ t('settings.github_sync_desc') }}</div>
+          </div>
+          <span class="material-symbols-rounded" style="font-size: 20px; opacity: 0.3">chevron_right</span>
+        </div>
+      </template>
+      <template v-else>
+        <!-- 已配置：完整管理面板 -->
+        <div class="setting-card">
+          <div class="setting-icon-wrap"><span class="material-symbols-rounded">cloud_sync</span></div>
+          <div class="setting-info">
+            <div class="setting-title">{{ t('settings.github_sync') }}</div>
+            <div class="setting-desc">{{ syncStore.github.owner }}/{{ syncStore.github.repo }}</div>
+          </div>
+          <span class="sync-status-pill configured">{{ t('settings.sync_configured') }}</span>
+        </div>
+
+        <!-- 自动同步开关 -->
+        <div class="setting-card sub-card">
+          <div class="setting-icon-wrap"><span class="material-symbols-rounded">sync</span></div>
+          <div class="setting-info">
+            <div class="setting-title">{{ t('settings.auto_sync') }}</div>
+            <div class="setting-desc">{{ t('settings.auto_sync_desc') }}</div>
+          </div>
+          <label class="m3-switch"><input type="checkbox" v-model="syncStore.github.autoSync" /><span class="track"><span class="thumb"><span v-if="syncStore.github.autoSync" class="material-symbols-rounded" style="font-size: 14px">check</span></span></span></label>
+        </div>
+
+        <!-- 立即同步 -->
+        <div class="setting-card sub-card" style="cursor: pointer" @click="syncStore.syncGitHub()">
+          <div class="setting-icon-wrap"><span class="material-symbols-rounded">cloud_upload</span></div>
+          <div class="setting-info">
+            <div class="setting-title">{{ t('settings.sync_now') }}</div>
+            <div class="setting-desc">
+              <template v-if="syncStore.github.lastSyncTime">{{ t('settings.last_sync', { time: formatSyncTime(syncStore.github.lastSyncTime) }) }}</template>
+              <template v-else>{{ t('settings.not_synced') }}</template>
+            </div>
+          </div>
+          <span v-if="syncStore.isSyncing" class="material-symbols-rounded spinning" style="font-size: 20px">progress_activity</span>
+          <span v-else class="sync-action-label">{{ t('settings.sync_action') }}</span>
+        </div>
+
+        <!-- 数据节省模式 -->
+        <div class="setting-card sub-card">
+          <div class="setting-icon-wrap"><span class="material-symbols-rounded">download</span></div>
+          <div class="setting-info">
+            <div class="setting-title">{{ t('settings.data_saver') }}</div>
+            <div class="setting-desc">{{ t('settings.data_saver_desc') }}</div>
+          </div>
+          <label class="m3-switch"><input type="checkbox" v-model="syncStore.github.dataSaver" /><span class="track"><span class="thumb"><span v-if="syncStore.github.dataSaver" class="material-symbols-rounded" style="font-size: 14px">check</span></span></span></label>
+        </div>
+
+        <!-- 静默同步失败 -->
+        <div class="setting-card sub-card">
+          <div class="setting-icon-wrap"><span class="material-symbols-rounded">error</span></div>
+          <div class="setting-info">
+            <div class="setting-title">{{ t('settings.silent_failures') }}</div>
+            <div class="setting-desc">{{ t('settings.silent_failures_desc') }}</div>
+          </div>
+          <label class="m3-switch"><input type="checkbox" v-model="syncStore.github.silentFailures" /><span class="track"><span class="thumb"><span v-if="syncStore.github.silentFailures" class="material-symbols-rounded" style="font-size: 14px">check</span></span></span></label>
+        </div>
+
+        <!-- 同步频率 -->
+        <div class="setting-card sub-card">
+          <div class="setting-icon-wrap"><span class="material-symbols-rounded">timer</span></div>
+          <div class="setting-info">
+            <div class="setting-title">{{ t('settings.sync_frequency') }}</div>
+            <div class="chip-wrap">
+              <button class="m3-chip sm" :class="{ active: syncStore.github.historyUpdateMode === 'immediate' }" @click="syncStore.github.historyUpdateMode = 'immediate'">{{ t('settings.sync_immediate') }}</button>
+              <button class="m3-chip sm" :class="{ active: syncStore.github.historyUpdateMode === 'batched' }" @click="syncStore.github.historyUpdateMode = 'batched'">{{ t('settings.sync_batched') }}</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 清除配置 -->
+        <div class="setting-card sub-card" style="justify-content: center;">
+          <button class="clear-config-btn" @click="showClearGitHubConfirm = true">
+            <span class="material-symbols-rounded" style="font-size: 16px">delete_outline</span>
+            {{ t('settings.clear_config') }}
+          </button>
+        </div>
+      </template>
+
+      <!-- WebDAV 同步 -->
+      <div class="setting-card" style="cursor: pointer" @click="syncStore.webdav.configured ? syncStore.syncWebDav() : (showWebDavDialog = true)">
+        <div class="setting-icon-wrap"><span class="material-symbols-rounded">dns</span></div>
+        <div class="setting-info">
+          <div class="setting-title">{{ t('settings.webdav_sync') }}</div>
+          <div class="setting-desc">
+            <template v-if="syncStore.webdav.configured">
+              {{ syncStore.webdav.serverUrl }}
+              <span v-if="syncStore.webdav.lastSyncTime"> · {{ formatSyncTime(syncStore.webdav.lastSyncTime) }}</span>
+            </template>
+            <template v-else>{{ t('settings.webdav_sync_desc') }}</template>
+          </div>
+        </div>
+        <span v-if="syncStore.isSyncing" class="material-symbols-rounded spinning" style="font-size: 20px">progress_activity</span>
+        <button v-else-if="syncStore.webdav.configured" class="sync-disconnect-btn" @click.stop="syncStore.disconnectWebDav()">
+          <span class="material-symbols-rounded" style="font-size: 18px">link_off</span>
+        </button>
+        <span v-else class="material-symbols-rounded" style="font-size: 20px; opacity: 0.3">chevron_right</span>
+      </div>
+
+      <div class="setting-card" style="cursor: pointer" @click="syncStore.exportPlaylists()">
+        <div class="setting-icon-wrap"><span class="material-symbols-rounded">upload_file</span></div>
+        <div class="setting-info">
+          <div class="setting-title">{{ t('settings.export_playlist') }}</div>
+          <div class="setting-desc">{{ t('settings.export_playlist_desc') }}</div>
+        </div>
+        <span class="material-symbols-rounded" style="font-size: 20px; opacity: 0.3">chevron_right</span>
+      </div>
+
+      <div class="setting-card" style="cursor: pointer" @click="syncStore.importPlaylists()">
+        <div class="setting-icon-wrap"><span class="material-symbols-rounded">download</span></div>
+        <div class="setting-info">
+          <div class="setting-title">{{ t('settings.import_playlist') }}</div>
+          <div class="setting-desc">{{ t('settings.import_playlist_desc') }}</div>
+        </div>
+        <span class="material-symbols-rounded" style="font-size: 20px; opacity: 0.3">chevron_right</span>
+      </div>
+
+      <div class="setting-card" style="cursor: pointer" @click="syncStore.exportPlaylists()">
+        <div class="setting-icon-wrap"><span class="material-symbols-rounded">settings_backup_restore</span></div>
+        <div class="setting-info">
+          <div class="setting-title">{{ t('settings.export_config') }}</div>
+          <div class="setting-desc">{{ t('settings.export_config_desc') }}</div>
+        </div>
+        <span class="material-symbols-rounded" style="font-size: 20px; opacity: 0.3">chevron_right</span>
+      </div>
+
+      <div class="setting-card" style="cursor: pointer" @click="syncStore.importPlaylists()">
+        <div class="setting-icon-wrap"><span class="material-symbols-rounded">restore</span></div>
+        <div class="setting-info">
+          <div class="setting-title">{{ t('settings.import_config') }}</div>
+          <div class="setting-desc">{{ t('settings.import_config_desc') }}</div>
+        </div>
+        <span class="material-symbols-rounded" style="font-size: 20px; opacity: 0.3">chevron_right</span>
+      </div>
+    </div></Transition>
+
+    <!-- 语言 -->
+    <div class="section-label">
+      <span class="material-symbols-rounded" style="font-size: 18px">language</span>
+      <span>{{ t('settings.language') }}</span>
+    </div>
+
+    <div class="setting-card">
+      <div class="setting-icon-wrap"><span class="material-symbols-rounded">translate</span></div>
+      <div class="setting-info">
+        <div class="setting-title">{{ t('settings.language') }}</div>
+        <div class="setting-desc">{{ t('settings.language_desc') }}</div>
+      </div>
+      <div class="chip-row">
+        <button v-for="loc in SUPPORTED_LOCALES" :key="loc.code" class="m3-chip" :class="{ active: locale === loc.code }" @click="handleLocaleSwitch(loc.code, $event)">{{ loc.label }}</button>
+      </div>
+    </div>
+
+    <!-- 关于 -->
+    <div class="section-label">
+      <span class="material-symbols-rounded" style="font-size: 18px">info</span>
+      <span>{{ t('settings.about') }}</span>
+    </div>
+
+    <div class="setting-card about-card">
+      <div class="setting-icon-wrap accent">
+        <img src="/app-icon.png" alt="NeriPlayer" style="width: 24px; height: 24px; border-radius: 4px;" />
+      </div>
+      <div class="setting-info">
+        <div class="setting-title">NeriPlayer Desktop</div>
+        <div class="setting-desc">{{ t('settings.version_info', { version: '1.0.0' }) }}</div>
+      </div>
+      <span class="material-symbols-rounded" style="font-size: 20px; opacity: 0.3">chevron_right</span>
+    </div>
+
+    <div class="setting-card" style="cursor: pointer" @click="shellOpen('https://github.com/nicepkg/NeriPlayer')">
+      <div class="setting-icon-wrap"><span class="material-symbols-rounded">code</span></div>
+      <div class="setting-info">
+        <div class="setting-title">{{ t('settings.github') }}</div>
+        <div class="setting-desc">{{ t('settings.github_desc') }}</div>
+      </div>
+      <span class="material-symbols-rounded" style="font-size: 20px; opacity: 0.3">open_in_new</span>
+    </div>
+
+    <!-- GitHub 两阶段配置对话框 -->
+    <Teleport to="body">
+      <div v-if="showGitHubDialog" class="dialog-overlay" @click.self="showGitHubDialog = false">
+        <div class="dialog-card" style="width: 420px">
+          <h3 class="dialog-title">{{ t('settings.github_sync_config') }}</h3>
+
+          <!-- Phase 1: Token 验证 -->
+          <div class="phase-section">
+            <div class="phase-header">
+              <span class="phase-number" :class="{ done: githubPhase === 2 }">{{ githubPhase === 2 ? '✓' : '1' }}</span>
+              <span class="phase-label">{{ t('settings.github_step1') }}</span>
+            </div>
+
+            <div v-if="githubPhase === 1" class="phase-body">
+              <div class="dialog-field">
+                <label>GitHub Personal Access Token</label>
+                <input v-model="githubToken" type="password" placeholder="ghp_xxxxxxxxxxxx" @keyup.enter="githubValidateToken" />
+              </div>
+              <p class="field-hint">{{ t('settings.github_token_hint') }}</p>
+              <button class="text-link-btn" @click="openGitHubTokenPage">
+                <span class="material-symbols-rounded" style="font-size: 16px">open_in_new</span>
+                {{ t('settings.github_create_token') }}
+              </button>
+            </div>
+            <div v-else class="phase-done-info">
+              <span class="material-symbols-rounded" style="font-size: 16px; color: var(--md-primary)">check_circle</span>
+              <span>{{ githubUsername }}</span>
+            </div>
+          </div>
+
+          <!-- Phase 2: 仓库选择 -->
+          <div v-if="githubPhase === 2" class="phase-section">
+            <div class="phase-header">
+              <span class="phase-number">2</span>
+              <span class="phase-label">{{ t('settings.github_step2') }}</span>
+            </div>
+            <div class="phase-body">
+              <div class="radio-group">
+                <label class="radio-option" :class="{ active: githubRepoMode === 'create' }" @click="githubRepoMode = 'create'">
+                  <span class="radio-dot" :class="{ checked: githubRepoMode === 'create' }"></span>
+                  {{ t('settings.github_create_repo') }}
+                </label>
+                <div v-if="githubRepoMode === 'create'" class="dialog-field" style="margin-left: 28px; margin-top: 8px">
+                  <input v-model="githubNewRepoName" type="text" placeholder="neriplayer-backup" />
+                </div>
+
+                <label class="radio-option" :class="{ active: githubRepoMode === 'existing' }" @click="githubRepoMode = 'existing'">
+                  <span class="radio-dot" :class="{ checked: githubRepoMode === 'existing' }"></span>
+                  {{ t('settings.github_use_existing') }}
+                </label>
+                <div v-if="githubRepoMode === 'existing'" class="dialog-field" style="margin-left: 28px; margin-top: 8px">
+                  <input v-model="githubExistingRepo" type="text" :placeholder="t('settings.github_repo_format_hint')" />
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <p v-if="syncStore.dialogError" class="dialog-error">{{ syncStore.dialogError }}</p>
+
+          <div class="dialog-actions">
+            <button class="dialog-btn" @click="showGitHubDialog = false">{{ t('settings.cancel') }}</button>
+            <button v-if="githubPhase === 1" class="dialog-btn primary" :disabled="githubIsValidating || !githubToken.trim()" @click="githubValidateToken">
+              <span v-if="githubIsValidating" class="material-symbols-rounded spinning" style="font-size: 16px">progress_activity</span>
+              <span v-else>{{ t('settings.github_verify_token') }}</span>
+            </button>
+            <button v-else class="dialog-btn primary" :disabled="githubIsSettingRepo" @click="githubFinishSetup">
+              <span v-if="githubIsSettingRepo" class="material-symbols-rounded spinning" style="font-size: 16px">progress_activity</span>
+              <span v-else>{{ t('settings.github_done') }}</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- WebDAV 配置对话框 -->
+    <Teleport to="body">
+      <div v-if="showWebDavDialog" class="dialog-overlay" @click.self="showWebDavDialog = false">
+        <div class="dialog-card">
+          <h3 class="dialog-title">{{ t('settings.webdav_sync') }}</h3>
+          <div class="dialog-field">
+            <label>{{ t('settings.webdav_server') }}</label>
+            <input v-model="webdavUrl" type="url" placeholder="https://dav.example.com" />
+          </div>
+          <div class="dialog-field">
+            <label>{{ t('settings.webdav_username') }}</label>
+            <input v-model="webdavUsername" type="text" />
+          </div>
+          <div class="dialog-field">
+            <label>{{ t('settings.webdav_password') }}</label>
+            <input v-model="webdavPassword" type="password" />
+          </div>
+          <div class="dialog-field">
+            <label>{{ t('settings.webdav_path') }}</label>
+            <input v-model="webdavBasePath" type="text" placeholder="/neriplayer" />
+          </div>
+          <p v-if="syncStore.dialogError" class="dialog-error">{{ syncStore.dialogError }}</p>
+          <div class="dialog-actions">
+            <button class="dialog-btn" @click="showWebDavDialog = false">{{ t('settings.cancel') }}</button>
+            <button class="dialog-btn primary" :disabled="webdavConfiguring || !webdavUrl.trim() || !webdavUsername.trim()" @click="configureWebDav">
+              <span v-if="webdavConfiguring" class="material-symbols-rounded spinning" style="font-size: 16px">progress_activity</span>
+              <span v-else>{{ t('settings.connect') }}</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- 退出登录确认对话框 -->
+    <Teleport to="body">
+      <div v-if="showLogoutConfirm" class="dialog-overlay" @click.self="showLogoutConfirm = false">
+        <div class="dialog-card" style="width: 340px">
+          <h3 class="dialog-title">{{ t('settings.logout_confirm_title') }}</h3>
+          <p class="dialog-desc">{{ t('settings.logout_confirm_msg', { platform: logoutTargetLabel }) }}</p>
+          <div class="dialog-actions">
+            <button class="dialog-btn" @click="showLogoutConfirm = false">{{ t('settings.cancel') }}</button>
+            <button class="dialog-btn danger" @click="confirmLogout">{{ t('settings.sign_out') }}</button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- 清除 GitHub 配置确认 -->
+    <Teleport to="body">
+      <div v-if="showClearGitHubConfirm" class="dialog-overlay" @click.self="showClearGitHubConfirm = false">
+        <div class="dialog-card" style="width: 340px">
+          <h3 class="dialog-title">{{ t('settings.clear_config_title') }}</h3>
+          <p class="dialog-desc">{{ t('settings.clear_config_msg') }}</p>
+          <div class="dialog-actions">
+            <button class="dialog-btn" @click="showClearGitHubConfirm = false">{{ t('settings.cancel') }}</button>
+            <button class="dialog-btn danger" @click="confirmClearGitHub">{{ t('settings.clear_config_confirm') }}</button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+  </div>
+</template>
+
+<style scoped lang="scss">
+.settings-view {
+  padding: 20px 28px 32px;
+  max-width: 680px;
+}
+
+.page-title {
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: -0.5px;
+  margin-bottom: 24px;
+}
+
+.section-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  color: var(--md-primary);
+  margin: 24px 0 10px;
+  padding: 0 4px;
+
+  &:first-of-type { margin-top: 0; }
+}
+
+.setting-card {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 16px;
+  border-radius: var(--radius-lg);
+  background: var(--md-surface-container);
+  margin-bottom: 8px;
+  transition: background var(--duration-short);
+
+  &:hover { background: var(--md-surface-container-high); }
+}
+
+.about-card { cursor: pointer; }
+
+/* 账号卡片 */
+.platform-icon {
+  display: block;
+  width: 24px;
+  height: 24px;
+  background: var(--md-on-surface-variant);
+  mask-size: contain;
+  mask-repeat: no-repeat;
+  mask-position: center;
+  flex-shrink: 0;
+}
+
+.account-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  object-fit: cover;
+  flex-shrink: 0;
+}
+
+.account-login-btn {
+  padding: 6px 16px;
+  border-radius: var(--radius-full);
+  font-size: 13px;
+  font-weight: 500;
+  font-family: inherit;
+  background: var(--md-primary);
+  color: var(--md-on-primary);
+  cursor: pointer;
+  transition: opacity var(--duration-short);
+  white-space: nowrap;
+  flex-shrink: 0;
+
+  &:hover { opacity: 0.85; }
+  &:disabled { opacity: 0.5; cursor: not-allowed; }
+}
+
+.account-logout-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 14px;
+  border-radius: var(--radius-full);
+  font-size: 13px;
+  font-weight: 500;
+  font-family: inherit;
+  color: var(--md-error, #FFB4AB);
+  flex-shrink: 0;
+  transition: background var(--duration-short);
+  white-space: nowrap;
+
+  &:hover { background: color-mix(in srgb, var(--md-error, #FFB4AB) 12%, transparent); }
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+.spin { animation: spin 1s linear infinite; }
+
+.setting-icon-wrap {
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-md);
+  background: var(--md-surface-container-high);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  color: var(--md-on-surface-variant);
+
+  &.accent {
+    background: var(--md-primary-container);
+    color: var(--md-on-primary-container);
+  }
+}
+
+.setting-info { flex: 1; min-width: 0; }
+.setting-title { font-size: 14px; font-weight: 500; }
+.setting-desc { font-size: 12px; color: var(--md-on-surface-variant); margin-top: 2px; }
+
+/* 深色模式切换胶囊 */
+.dark-mode-pills {
+  display: flex;
+  background: var(--md-surface-container-highest);
+  border-radius: var(--radius-full);
+  padding: 3px;
+  gap: 2px;
+}
+
+.pill {
+  width: 36px;
+  height: 32px;
+  border-radius: var(--radius-full);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--md-on-surface-variant);
+  transition: all var(--duration-short) var(--ease-standard);
+
+  &.active {
+    background: var(--md-primary);
+    color: var(--md-on-primary);
+  }
+  &:hover:not(.active) { background: var(--md-surface-variant); }
+}
+
+/* 主题色选择 */
+.color-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.color-dot {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid transparent;
+  transition: transform var(--duration-short), border-color var(--duration-short);
+
+  &:hover { transform: scale(1.15); }
+  &.selected { border-color: rgba(255,255,255,0.8); }
+}
+
+/* M3 Switch — 严格对齐 M3 规范 */
+.m3-switch {
+  position: relative;
+  flex-shrink: 0;
+  cursor: pointer;
+
+  input { display: none; }
+
+  .track {
+    display: flex;
+    align-items: center;
+    width: 52px;
+    height: 32px;
+    border-radius: 16px;
+    background: var(--md-surface-container-highest);
+    border: 2px solid var(--md-outline);
+    position: relative;
+    transition: background var(--duration-medium) var(--ease-standard),
+                border-color var(--duration-medium) var(--ease-standard);
+  }
+
+  .thumb {
+    position: absolute;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: var(--md-outline);
+    top: 50%;
+    left: 6px;
+    transform: translateY(-50%);
+    transition: left var(--duration-medium) var(--ease-standard),
+                width var(--duration-medium) var(--ease-standard),
+                height var(--duration-medium) var(--ease-standard),
+                background var(--duration-medium) var(--ease-standard);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--md-on-primary);
+    font-size: 0;
+  }
+
+  input:checked + .track {
+    background: var(--md-primary);
+    border-color: var(--md-primary);
+
+    .thumb {
+      left: 22px;
+      width: 24px;
+      height: 24px;
+      background: var(--md-on-primary);
+      font-size: 14px;
+    }
+  }
+}
+/* 折叠区段箭头 */
+.section-label.clickable {
+  cursor: pointer;
+  user-select: none;
+
+  &:hover { opacity: 0.8; }
+}
+
+.section-arrow {
+  margin-left: auto;
+  font-size: 18px !important;
+  transition: transform var(--duration-medium) var(--ease-standard);
+  opacity: 0.5;
+
+  &.expanded { transform: rotate(180deg); }
+}
+
+/* 子级设置卡片 */
+.sub-card {
+  margin-left: 54px;
+  background: var(--md-surface-container-low) !important;
+}
+
+/* M3 Chip 选择器 */
+.chip-row, .chip-wrap {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.chip-row { flex-shrink: 0; }
+.chip-wrap { margin-top: 8px; }
+
+.m3-chip {
+  padding: 6px 14px;
+  border-radius: var(--radius-full);
+  font-size: 13px;
+  font-weight: 500;
+  font-family: inherit;
+  background: var(--md-surface-container-highest);
+  color: var(--md-on-surface-variant);
+  border: 1px solid var(--md-outline-variant);
+  cursor: pointer;
+  transition: all var(--duration-short) var(--ease-standard);
+  white-space: nowrap;
+
+  &:hover { background: var(--md-surface-variant); }
+
+  &.active {
+    background: var(--md-primary);
+    color: var(--md-on-primary);
+    border-color: var(--md-primary);
+  }
+
+  &.sm {
+    padding: 4px 10px;
+    font-size: 12px;
+  }
+}
+
+.quality-card {
+  flex-wrap: wrap;
+}
+
+/* M3 Slider */
+.m3-slider {
+  appearance: none;
+  width: 120px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--md-surface-container-highest);
+  outline: none;
+  cursor: pointer;
+  flex-shrink: 0;
+
+  &::-webkit-slider-thumb {
+    appearance: none;
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: var(--md-primary);
+    cursor: pointer;
+    transition: transform var(--duration-short);
+  }
+
+  &::-webkit-slider-thumb:hover { transform: scale(1.2); }
+}
+
+/* 同步断开按钮 */
+.sync-disconnect-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-full);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--md-error);
+  transition: background var(--duration-short);
+  flex-shrink: 0;
+
+  &:hover { background: color-mix(in srgb, var(--md-error) 10%, transparent); }
+}
+
+/* 同步状态标签 */
+.sync-status-pill {
+  font-size: 11px;
+  font-weight: 500;
+  padding: 4px 10px;
+  border-radius: var(--radius-full);
+  flex-shrink: 0;
+
+  &.configured {
+    background: color-mix(in srgb, var(--md-primary) 12%, transparent);
+    color: var(--md-primary);
+  }
+}
+
+.sync-action-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--md-primary);
+  flex-shrink: 0;
+}
+
+.clear-config-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 20px;
+  border-radius: var(--radius-full);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--md-error);
+  transition: background var(--duration-short);
+  cursor: pointer;
+
+  &:hover { background: color-mix(in srgb, var(--md-error) 10%, transparent); }
+}
+
+.spinning {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* 对话框 */
+.dialog-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  backdrop-filter: blur(4px);
+  animation: overlay-fade-in 200ms ease;
+}
+
+@keyframes overlay-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.dialog-card {
+  background: var(--md-surface-container-high);
+  border-radius: var(--radius-xl);
+  padding: 24px;
+  width: 380px;
+  max-width: 90vw;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+  animation: dialog-scale-in 250ms cubic-bezier(0.05, 0.7, 0.1, 1);
+  transform-origin: center;
+}
+
+@keyframes dialog-scale-in {
+  from { opacity: 0; transform: scale(0.92); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+.dialog-title {
+  font-size: 18px;
+  font-weight: 600;
+  margin-bottom: 20px;
+}
+
+.dialog-field {
+  margin-bottom: 14px;
+
+  label {
+    display: block;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--md-on-surface-variant);
+    margin-bottom: 6px;
+  }
+
+  input {
+    width: 100%;
+    padding: 10px 14px;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--md-outline-variant);
+    background: var(--md-surface-container);
+    color: var(--md-on-surface);
+    font-size: 13px;
+    font-family: inherit;
+    outline: none;
+    transition: border-color var(--duration-short);
+
+    &:focus {
+      border-color: var(--md-primary);
+    }
+
+    &::placeholder {
+      color: var(--md-on-surface-variant);
+      opacity: 0.5;
+    }
+  }
+}
+
+.dialog-error {
+  font-size: 12px;
+  color: var(--md-error);
+  margin-bottom: 12px;
+}
+
+.dialog-desc {
+  font-size: 13px;
+  color: var(--md-on-surface-variant);
+  line-height: 1.5;
+  margin-bottom: 4px;
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 20px;
+}
+
+.dialog-btn {
+  padding: 8px 20px;
+  border-radius: var(--radius-full);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background var(--duration-short);
+  color: var(--md-on-surface);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+
+  &:hover { background: var(--md-surface-container-highest); }
+
+  &.primary {
+    background: var(--md-primary);
+    color: var(--md-on-primary);
+
+    &:hover { opacity: 0.9; }
+    &:disabled { opacity: 0.5; cursor: not-allowed; }
+  }
+
+  &.danger {
+    background: var(--md-error);
+    color: var(--md-on-error, #fff);
+
+    &:hover { opacity: 0.9; }
+  }
+}
+
+/* 两阶段引导样式 */
+.phase-section {
+  margin-bottom: 18px;
+  padding: 14px;
+  border-radius: var(--radius-lg);
+  background: var(--md-surface-container);
+}
+
+.phase-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.phase-number {
+  width: 24px;
+  height: 24px;
+  border-radius: var(--radius-full);
+  background: var(--md-primary);
+  color: var(--md-on-primary);
+  font-size: 12px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+
+  &.done {
+    background: color-mix(in srgb, var(--md-primary) 20%, transparent);
+    color: var(--md-primary);
+  }
+}
+
+.phase-label {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.phase-body {
+  padding-left: 34px;
+}
+
+.phase-done-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-left: 34px;
+  font-size: 13px;
+  color: var(--md-on-surface-variant);
+}
+
+.field-hint {
+  font-size: 11px;
+  color: var(--md-on-surface-variant);
+  opacity: 0.7;
+  margin: 4px 0 8px;
+}
+
+.text-link-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--md-primary);
+  cursor: pointer;
+  padding: 4px 0;
+  transition: opacity var(--duration-short);
+
+  &:hover { opacity: 0.8; }
+}
+
+.radio-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.radio-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+  cursor: pointer;
+  padding: 6px 0;
+  color: var(--md-on-surface);
+
+  &.active { font-weight: 500; }
+}
+
+.radio-dot {
+  width: 18px;
+  height: 18px;
+  border-radius: var(--radius-full);
+  border: 2px solid var(--md-outline);
+  position: relative;
+  flex-shrink: 0;
+  transition: border-color var(--duration-short);
+
+  &.checked {
+    border-color: var(--md-primary);
+
+    &::after {
+      content: '';
+      position: absolute;
+      inset: 3px;
+      border-radius: var(--radius-full);
+      background: var(--md-primary);
+    }
+  }
+}
+</style>

@@ -1,0 +1,43 @@
+[package]
+name = "neri-player-desktop"
+version = "1.0.0"
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-shell = "2"
+tauri-plugin-store = "2"
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", features = ["json", "cookies", "stream"] }
+rodio = { version = "0.19", features = ["symphonia-all"] }
+lofty = "0.21"
+md-5 = "0.10"
+aes = "0.8"
+cbc = "0.1"
+ecb = "0.1"
+rsa = "0.9"
+sha1 = "0.10"
+hmac = "0.12"
+hex = "0.4"
+base64 = "0.22"
+url = "2"
+rand = "0.8"
+chrono = "0.4"
+thiserror = "2"
+parking_lot = "0.12"
+walkdir = "2"
+urlencoding = "2"
+regex = "1"
+sha2 = "0.10"
+uuid = { version = "1", features = ["v4"] }
+whoami = "1"
+log = "0.4"
+dirs-next = "2"
+prost = "0.13"
+flate2 = "1"

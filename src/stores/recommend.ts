@@ -1,0 +1,307 @@
+import { defineStore } from 'pinia'
+import { ref } from 'vue'
+import { invoke } from '@tauri-apps/api/core'
+
+export interface PlaylistInfo {
+  id: string | number
+  name: string
+  coverUrl: string
+  trackCount: number
+  description?: string
+  creator?: string
+}
+
+export interface HomeFeedShelf {
+  title: string
+  items: HomeFeedItem[]
+}
+
+export interface HomeFeedItem {
+  title: string
+  subtitle: string
+  coverUrl: string
+  browseId?: string
+  videoId?: string
+}
+
+export const useRecommendStore = defineStore('recommend', () => {
+  // 网易云推荐歌单
+  const recommendedPlaylists = ref<PlaylistInfo[]>([])
+  const recommendedSongs = ref<any[]>([])
+
+  // YouTube 首页 shelf
+  const homeFeedShelves = ref<HomeFeedShelf[]>([])
+
+  // 用户歌单
+  const userPlaylists = ref<Record<string, PlaylistInfo[]>>({})
+
+  // 用户收藏专辑（网易云）
+  const userAlbums = ref<any[]>([])
+
+  // 用户喜欢的歌曲 ID 集合
+  const likedSongIds = ref<Set<number>>(new Set())
+
+  const isLoading = ref(false)
+  const error = ref<string | null>(null)
+
+  /** 获取网易云推荐歌单 */
+  async function fetchRecommendedPlaylists(limit = 30) {
+    isLoading.value = true
+    error.value = null
+    try {
+      const data = await invoke<any>('get_recommended_playlists', { limit })
+      const result = data?.result || []
+      recommendedPlaylists.value = result.map((p: any) => ({
+        id: p.id,
+        name: p.name,
+        coverUrl: p.picUrl || p.coverImgUrl || '',
+        trackCount: p.trackCount || 0,
+        description: p.copywriter || '',
+      }))
+    } catch (e: any) {
+      error.value = e?.toString() || 'Failed to fetch recommendations'
+      console.error('fetchRecommendedPlaylists:', e)
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  /** 获取网易云每日推荐歌曲 */
+  async function fetchRecommendedSongs() {
+    isLoading.value = true
+    try {
+      const data = await invoke<any>('get_recommended_songs')
+      recommendedSongs.value = data?.data?.dailySongs || []
+    } catch (e) {
+      console.error('fetchRecommendedSongs:', e)
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  /** 获取用户歌单 */
+  async function fetchUserPlaylists(platform: string) {
+    isLoading.value = true
+    try {
+      const data = await invoke<any>('get_user_playlists', { platform })
+
+      let playlists: PlaylistInfo[] = []
+      if (platform === 'netease') {
+        const list = data?.playlist || []
+        playlists = list.map((p: any) => ({
+          id: p.id,
+          name: p.name,
+          coverUrl: p.coverImgUrl || '',
+          trackCount: p.trackCount || 0,
+          creator: p.creator?.nickname || '',
+        }))
+      } else if (platform === 'bilibili') {
+        const list = data?.data?.list || []
+        playlists = list.map((f: any) => ({
+          id: f.id,
+          name: f.title,
+          coverUrl: f.cover || '',
+          trackCount: f.media_count || 0,
+        }))
+      } else if (platform === 'youtube') {
+        // YouTube browse 响应需要解析 sectionListRenderer
+        playlists = parseYouTubeLibraryPlaylists(data)
+      }
+
+      userPlaylists.value[platform] = playlists
+    } catch (e) {
+      console.error(`fetchUserPlaylists(${platform}):`, e)
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  /** 获取 YouTube 首页信息流 */
+  async function fetchHomeFeed() {
+    isLoading.value = true
+    try {
+      const data = await invoke<any>('get_home_feed')
+      homeFeedShelves.value = parseYouTubeHomeFeed(data)
+    } catch (e) {
+      console.error('fetchHomeFeed:', e)
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  /** 获取精品歌单 */
+  async function fetchHighQualityPlaylists(cat?: string, limit = 30) {
+    isLoading.value = true
+    try {
+      const data = await invoke<any>('get_high_quality_playlists', { cat, limit })
+      const list = data?.playlists || []
+      return list.map((p: any) => ({
+        id: p.id,
+        name: p.name,
+        coverUrl: p.coverImgUrl || '',
+        trackCount: p.trackCount || 0,
+        description: p.description || '',
+        creator: p.creator?.nickname || '',
+      }))
+    } catch (e) {
+      console.error('fetchHighQualityPlaylists:', e)
+      return []
+    } finally {
+      isLoading.value = false
+    }
+  }
+
+  /** 获取精品歌单分类标签 */
+  async function fetchHighQualityTags(): Promise<string[]> {
+    try {
+      const data = await invoke<any>('get_high_quality_tags')
+      const tags = data?.tags || []
+      return tags.map((t: any) => t.name || t)
+    } catch (e) {
+      console.error('fetchHighQualityTags:', e)
+      return []
+    }
+  }
+
+  /** 获取用户喜欢的歌曲 ID 列表 */
+  async function fetchLikedSongIds() {
+    try {
+      const data = await invoke<any>('get_liked_song_ids')
+      const ids: number[] = data?.ids || []
+      likedSongIds.value = new Set(ids)
+    } catch (e) {
+      console.error('fetchLikedSongIds:', e)
+    }
+  }
+
+  /** 喜欢/取消喜欢歌曲 */
+  async function toggleLikeSong(songId: number, like: boolean): Promise<boolean> {
+    try {
+      const data = await invoke<any>('like_song', { songId, like })
+      if (data?.code === 200) {
+        if (like) {
+          likedSongIds.value.add(songId)
+        } else {
+          likedSongIds.value.delete(songId)
+        }
+        return true
+      }
+      return false
+    } catch (e) {
+      console.error('toggleLikeSong:', e)
+      return false
+    }
+  }
+
+  /** 获取专辑详情 */
+  async function fetchAlbumDetail(albumId: number) {
+    try {
+      return await invoke<any>('get_album_detail', { albumId })
+    } catch (e) {
+      console.error('fetchAlbumDetail:', e)
+      return null
+    }
+  }
+
+  /** 获取用户收藏的专辑列表（网易云） */
+  async function fetchUserAlbums() {
+    try {
+      const data = await invoke<any>('get_user_stared_albums', {})
+      const list = data?.data || []
+      userAlbums.value = list.map((a: any) => ({
+        id: a.id,
+        name: a.name,
+        coverUrl: a.picUrl || '',
+        artist: a.artists?.map((ar: any) => ar.name).join(', ') || '',
+        trackCount: a.size || 0,
+      }))
+    } catch (e) {
+      console.error('fetchUserAlbums:', e)
+    }
+  }
+
+  /** 获取 B站收藏夹内容 */
+  async function fetchBiliFavoriteItems(mediaId: number, page = 1) {
+    try {
+      return await invoke<any>('get_bili_favorite_items', { mediaId, page })
+    } catch (e) {
+      console.error('fetchBiliFavoriteItems:', e)
+      return null
+    }
+  }
+
+  /** 验证平台登录状态 */
+  async function validateAuth(platform: string): Promise<boolean> {
+    try {
+      return await invoke<boolean>('validate_auth', { platform })
+    } catch {
+      return false
+    }
+  }
+
+  return {
+    recommendedPlaylists, recommendedSongs, homeFeedShelves, userPlaylists,
+    userAlbums, likedSongIds, isLoading, error,
+    fetchRecommendedPlaylists, fetchRecommendedSongs, fetchUserPlaylists,
+    fetchHomeFeed, fetchHighQualityPlaylists, fetchHighQualityTags,
+    fetchLikedSongIds, toggleLikeSong, fetchAlbumDetail, fetchUserAlbums,
+    fetchBiliFavoriteItems, validateAuth,
+  }
+})
+
+// YouTube InnerTube 响应解析
+function parseYouTubeHomeFeed(data: any): HomeFeedShelf[] {
+  const shelves: HomeFeedShelf[] = []
+  try {
+    const tabs = data?.contents?.singleColumnBrowseResultsRenderer?.tabs || []
+    const contents = tabs[0]?.tabRenderer?.content?.sectionListRenderer?.contents || []
+    for (const section of contents) {
+      const shelf = section?.musicCarouselShelfRenderer
+      if (!shelf) continue
+      const title = shelf?.header?.musicCarouselShelfBasicHeaderRenderer?.title?.runs?.[0]?.text || ''
+      const items: HomeFeedItem[] = []
+      for (const item of (shelf?.contents || [])) {
+        const renderer = item?.musicTwoRowItemRenderer || item?.musicResponsiveListItemRenderer
+        if (!renderer) continue
+        items.push({
+          title: renderer?.title?.runs?.[0]?.text || '',
+          subtitle: renderer?.subtitle?.runs?.map((r: any) => r.text).join('') || '',
+          coverUrl: renderer?.thumbnailRenderer?.musicThumbnailRenderer?.thumbnail?.thumbnails?.slice(-1)?.[0]?.url || '',
+          browseId: renderer?.navigationEndpoint?.browseEndpoint?.browseId,
+          videoId: renderer?.overlay?.musicItemThumbnailOverlayRenderer?.content?.musicPlayButtonRenderer?.playNavigationEndpoint?.watchEndpoint?.videoId,
+        })
+      }
+      if (title && items.length > 0) {
+        shelves.push({ title, items })
+      }
+    }
+  } catch {
+    // 解析失败返回空
+  }
+  return shelves
+}
+
+function parseYouTubeLibraryPlaylists(data: any): PlaylistInfo[] {
+  const playlists: PlaylistInfo[] = []
+  try {
+    const tabs = data?.contents?.singleColumnBrowseResultsRenderer?.tabs || []
+    const contents = tabs[0]?.tabRenderer?.content?.sectionListRenderer?.contents || []
+    for (const section of contents) {
+      const items = section?.gridRenderer?.items || section?.musicShelfRenderer?.contents || []
+      for (const item of items) {
+        const renderer = item?.musicTwoRowItemRenderer
+        if (!renderer) continue
+        playlists.push({
+          id: renderer?.navigationEndpoint?.browseEndpoint?.browseId || '',
+          name: renderer?.title?.runs?.[0]?.text || '',
+          coverUrl: renderer?.thumbnailRenderer?.musicThumbnailRenderer?.thumbnail?.thumbnails?.slice(-1)?.[0]?.url || '',
+          trackCount: 0,
+          description: renderer?.subtitle?.runs?.map((r: any) => r.text).join('') || '',
+        })
+      }
+    }
+  } catch {
+    // 解析失败返回空
+  }
+  return playlists
+}

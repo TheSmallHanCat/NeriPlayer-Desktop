@@ -1,0 +1,10 @@
+pub mod error;
+pub mod state;
+pub mod auth;
+pub mod audio;
+pub mod api;
+pub mod lyrics;
+pub mod library;
+pub mod settings;
+pub mod sync;
+pub mod commands;

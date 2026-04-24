@@ -1,0 +1,186 @@
+<script setup lang="ts">
+import { ref, computed, onMounted, onUnmounted } from 'vue'
+
+const props = withDefaults(defineProps<{
+  progress: number
+  isPlaying: boolean
+  activeColor?: string
+  inactiveColor?: string
+}>(), {
+  activeColor: '#fff',
+  inactiveColor: 'rgba(255,255,255,0.3)',
+})
+
+const emit = defineEmits<{
+  seek: [progress: number]
+  preview: [progress: number]
+  'preview-end': []
+}>()
+
+const containerRef = ref<HTMLDivElement>()
+const svgRef = ref<SVGSVGElement>()
+const isDragging = ref(false)
+const dragProgress = ref(0)
+
+const WAVE_AMPLITUDE = 2
+const WAVE_FREQ = 0.08
+const PHASE_CYCLE = 2000
+const AMP_TRANSITION = 500
+
+let phase = 0
+let currentAmp = 0
+let animFrame = 0
+let lastTime = 0
+
+let pathActive: SVGPathElement | null = null
+let pathInactive: SVGPathElement | null = null
+let thumbDiv: HTMLDivElement | null = null
+
+const currentProgress = computed(() => isDragging.value ? dragProgress.value : props.progress)
+
+function wavePath(startX: number, endX: number, cy: number): string {
+  if (startX >= endX) return `M ${startX} ${cy}`
+  let d = `M ${startX} ${cy + Math.sin(startX * WAVE_FREQ + phase) * currentAmp}`
+  for (let x = startX + 2; x <= endX; x += 2) {
+    d += ` L ${x} ${cy + Math.sin(x * WAVE_FREQ + phase) * currentAmp}`
+  }
+  return d
+}
+
+function animate(timestamp: number) {
+  if (!lastTime) lastTime = timestamp
+  const dt = timestamp - lastTime
+  lastTime = timestamp
+
+  phase += (dt / PHASE_CYCLE) * Math.PI * 2
+
+  const targetAmp = (props.isPlaying && !isDragging.value) ? WAVE_AMPLITUDE : 0
+  const ampStep = (WAVE_AMPLITUDE / AMP_TRANSITION) * dt
+  if (currentAmp < targetAmp) {
+    currentAmp = Math.min(targetAmp, currentAmp + ampStep)
+  } else if (currentAmp > targetAmp) {
+    currentAmp = Math.max(targetAmp, currentAmp - ampStep)
+  }
+
+  const p = currentProgress.value
+  const px = p * 500
+  if (pathInactive) pathInactive.setAttribute('d', wavePath(px, 500, 4))
+  if (pathActive) pathActive.setAttribute('d', wavePath(0, px, 4))
+
+  // thumb 用 HTML div，按百分比定位（不受 SVG preserveAspectRatio=none 影响）
+  if (thumbDiv) {
+    const waveY = Math.sin(px * WAVE_FREQ + phase) * currentAmp
+    // waveY 范围 [-2,2]，映射到容器高度百分比
+    const yPercent = 50 + (waveY / 4) * 50
+    thumbDiv.style.left = `${p * 100}%`
+    thumbDiv.style.top = `${yPercent}%`
+    thumbDiv.style.width = thumbDiv.style.height = isDragging.value ? '12px' : '8px'
+  }
+
+  animFrame = requestAnimationFrame(animate)
+}
+
+onMounted(() => {
+  const svg = svgRef.value!
+  pathInactive = svg.querySelector('.wave-inactive')
+  pathActive = svg.querySelector('.wave-active')
+  thumbDiv = containerRef.value!.querySelector('.thumb') as HTMLDivElement
+  animFrame = requestAnimationFrame(animate)
+})
+onUnmounted(() => { cancelAnimationFrame(animFrame) })
+
+function handlePointerDown(e: PointerEvent) {
+  e.preventDefault()
+  e.stopPropagation()
+  const rect = containerRef.value!.getBoundingClientRect()
+  isDragging.value = true
+  dragProgress.value = clamp01((e.clientX - rect.left) / rect.width)
+  emit('preview', dragProgress.value)
+
+  // 在 document 上监听后续事件，确保指针离开组件后仍能捕获
+  const onMove = (ev: PointerEvent) => {
+    if (!isDragging.value) return
+    const r = containerRef.value!.getBoundingClientRect()
+    dragProgress.value = clamp01((ev.clientX - r.left) / r.width)
+    emit('preview', dragProgress.value)
+  }
+  const onUp = () => {
+    if (isDragging.value) {
+      const p = dragProgress.value
+      isDragging.value = false
+      emit('seek', p)
+      emit('preview-end')
+    }
+    document.removeEventListener('pointermove', onMove)
+    document.removeEventListener('pointerup', onUp)
+    document.removeEventListener('pointercancel', onUp)
+  }
+  document.addEventListener('pointermove', onMove)
+  document.addEventListener('pointerup', onUp)
+  document.addEventListener('pointercancel', onUp)
+}
+
+function clamp01(v: number) { return Math.max(0, Math.min(1, v)) }
+</script>
+
+<template>
+  <div
+    ref="containerRef"
+    class="waveform-container"
+    @pointerdown="handlePointerDown"
+  >
+    <svg
+      ref="svgRef"
+      class="waveform-svg"
+      viewBox="0 0 500 8"
+      preserveAspectRatio="none"
+    >
+      <path class="wave-inactive" fill="none" :stroke="inactiveColor" stroke-width="2" stroke-linecap="round" />
+      <path class="wave-active" fill="none" :stroke="activeColor" stroke-width="3" stroke-linecap="round" />
+    </svg>
+    <!-- thumb 独立于 SVG，不受拉伸影响 -->
+    <div class="thumb" />
+  </div>
+</template>
+
+<style scoped>
+.waveform-container {
+  position: relative;
+  width: 100%;
+  height: 8px;
+  cursor: pointer;
+  touch-action: none;
+}
+
+/* 扩大点击热区的透明伪元素 */
+.waveform-container::before {
+  content: '';
+  position: absolute;
+  top: -12px;
+  bottom: -12px;
+  left: 0;
+  right: 0;
+}
+
+.waveform-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  shape-rendering: geometricPrecision;
+}
+
+.thumb {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #fff;
+  transform: translate(-50%, -50%);
+  transition: width 150ms, height 150ms;
+  box-shadow: 0 0 4px rgba(255, 255, 255, 0.3);
+  pointer-events: none;
+  z-index: 1;
+  will-change: left, top;
+}
+</style>

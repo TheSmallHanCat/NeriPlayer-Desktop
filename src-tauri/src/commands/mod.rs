@@ -1,0 +1,8 @@
+pub mod player_cmd;
+pub mod library_cmd;
+pub mod search_cmd;
+pub mod lyrics_cmd;
+pub mod settings_cmd;
+pub mod auth_cmd;
+pub mod recommend_cmd;
+pub mod sync_cmd;

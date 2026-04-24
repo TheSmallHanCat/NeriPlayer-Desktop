@@ -1,0 +1,752 @@
+<script setup lang="ts">
+import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
+import { useRouter } from 'vue-router'
+
+defineOptions({ name: 'LibraryView' })
+import { useI18n } from 'vue-i18n'
+import { useLibraryStore } from '@/stores/library'
+import { usePlayerStore } from '@/stores/player'
+import { useRecommendStore } from '@/stores/recommend'
+import { useAuthStore } from '@/stores/auth'
+import { invoke } from '@tauri-apps/api/core'
+import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import M3Dialog from '@/components/ui/M3Dialog.vue'
+import M3Input from '@/components/ui/M3Input.vue'
+
+const router = useRouter()
+const { t } = useI18n()
+const library = useLibraryStore()
+const player = usePlayerStore()
+const recommend = useRecommendStore()
+const auth = useAuthStore()
+
+// 喜欢的歌曲计数
+const likedCount = computed(() => recommend.likedSongIds.size)
+
+const tabs = computed(() => [
+  { label: t('library.tab_local'), icon: 'folder_open', key: 'local' },
+  { label: t('library.tab_favorites'), icon: 'favorite', key: 'favorites' },
+  { label: t('library.tab_netease_playlists'), icon: 'queue_music', key: 'netease_playlists' },
+  { label: t('library.tab_netease_albums'), icon: 'album', key: 'netease_albums' },
+])
+const activeTab = ref(0)
+
+// 真实播放列表
+interface PlaylistInfo { id: number; name: string; track_count: number; modified_at: number; cover_url: string | null }
+const playlists = ref<PlaylistInfo[]>([])
+
+async function loadPlaylists() {
+  try {
+    const raw = await invoke<PlaylistInfo[]>('list_playlists')
+    // 排序：「我喜欢的音乐」置顶，「本地音乐」置底，其余保持原序
+    const liked: PlaylistInfo[] = []
+    const localFiles: PlaylistInfo[] = []
+    const normal: PlaylistInfo[] = []
+    for (const pl of raw) {
+      if (LIKED_NAMES.includes(pl.name)) liked.push(pl)
+      else if (LOCAL_NAMES.includes(pl.name)) localFiles.push(pl)
+      else normal.push(pl)
+    }
+    playlists.value = [...liked, ...normal, ...localFiles]
+  } catch (e) {
+    console.error('Load playlists failed:', e)
+  }
+}
+
+// M3 Dialog 创建播放列表
+const showCreateDialog = ref(false)
+const newPlaylistName = ref('')
+const inputRef = ref<InstanceType<typeof M3Input>>()
+
+function openCreateDialog() {
+  newPlaylistName.value = ''
+  showCreateDialog.value = true
+  nextTick(() => inputRef.value?.focus())
+}
+
+async function confirmCreate() {
+  if (!newPlaylistName.value.trim()) return
+  try {
+    await invoke('create_playlist', { name: newPlaylistName.value.trim() })
+    showCreateDialog.value = false
+    await loadPlaylists()
+  } catch (e) {
+    console.error('Create playlist failed:', e)
+  }
+}
+
+// 上下文菜单
+const contextMenu = ref<{ show: boolean; x: number; y: number; playlist: PlaylistInfo | null }>({
+  show: false, x: 0, y: 0, playlist: null,
+})
+
+// 特殊歌单：跨语言匹配（同步数据可能是任何语言的名称）
+const LIKED_NAMES = ['我喜欢的音乐', '我喜歡的音樂', 'お気に入りの曲', 'Liked Songs']
+const LOCAL_NAMES = ['本地音乐', '本機音樂', 'ローカル音楽', 'Local Music']
+const ALL_PROTECTED = [...LIKED_NAMES, ...LOCAL_NAMES]
+
+function isProtectedPlaylist(pl: PlaylistInfo) {
+  return ALL_PROTECTED.includes(pl.name)
+}
+
+// 显示名：特殊歌单用当前语言翻译，其他原样
+function displayName(pl: PlaylistInfo): string {
+  if (LIKED_NAMES.includes(pl.name)) return t('library.liked_songs')
+  if (LOCAL_NAMES.includes(pl.name)) return t('library.local_files')
+  return pl.name
+}
+
+function openContextMenu(e: MouseEvent, pl: PlaylistInfo) {
+  // 基于按钮位置定位，并确保不超出视口
+  const btn = e.currentTarget as HTMLElement
+  const rect = btn.getBoundingClientRect()
+  const menuWidth = 200
+  const menuHeight = 100
+
+  // 默认：按钮左侧弹出
+  let x = rect.left - menuWidth - 4
+  let y = rect.top
+
+  // 左侧空间不足时改为右侧
+  if (x < 8) x = rect.right + 4
+  // 右侧仍然超出时贴左
+  if (x + menuWidth > window.innerWidth - 8) x = window.innerWidth - menuWidth - 8
+  // 底部超出时上移
+  if (y + menuHeight > window.innerHeight - 8) y = window.innerHeight - menuHeight - 8
+
+  contextMenu.value = { show: true, x, y, playlist: pl }
+}
+
+function closeContextMenu() {
+  contextMenu.value.show = false
+}
+
+// 删除确认
+const showDeleteDialog = ref(false)
+const deleteTarget = ref<PlaylistInfo | null>(null)
+
+function requestDelete(pl: PlaylistInfo) {
+  closeContextMenu()
+  deleteTarget.value = pl
+  showDeleteDialog.value = true
+}
+
+async function confirmDelete() {
+  if (!deleteTarget.value) return
+  try {
+    await invoke('delete_playlist', { id: deleteTarget.value.id })
+    showDeleteDialog.value = false
+    deleteTarget.value = null
+    await loadPlaylists()
+  } catch (e) {
+    console.error('Delete playlist failed:', e)
+  }
+}
+
+// 重命名
+const showRenameDialog = ref(false)
+const renameTarget = ref<PlaylistInfo | null>(null)
+const renameValue = ref('')
+const renameInputRef = ref<InstanceType<typeof M3Input>>()
+
+function requestRename(pl: PlaylistInfo) {
+  closeContextMenu()
+  renameTarget.value = pl
+  renameValue.value = pl.name
+  showRenameDialog.value = true
+  nextTick(() => renameInputRef.value?.focus())
+}
+
+async function confirmRename() {
+  if (!renameTarget.value || !renameValue.value.trim()) return
+  try {
+    await invoke('rename_playlist', { id: renameTarget.value.id, name: renameValue.value.trim() })
+    showRenameDialog.value = false
+    renameTarget.value = null
+    await loadPlaylists()
+  } catch (e) {
+    console.error('Rename playlist failed:', e)
+  }
+}
+
+// 网易云用户歌单
+const neteasePlaylists = computed(() => recommend.userPlaylists['netease'] || [])
+// 哔哩哔哩收藏夹
+const biliPlaylists = computed(() => recommend.userPlaylists['bilibili'] || [])
+
+// 收藏歌单（从同步数据中获取）
+interface FavoritePlaylist {
+  id: string; name: string; coverUrl: string; trackCount: number; source: string;
+  songs: any[]; addedTime: number; modifiedAt: number; isDeleted: boolean;
+}
+const favoritePlaylists = ref<FavoritePlaylist[]>([])
+
+async function loadFavorites() {
+  try {
+    const raw = await invoke<any[]>('list_favorite_playlists')
+    favoritePlaylists.value = (raw || []).map((f: any) => ({
+      id: f.id ?? '',
+      name: f.name ?? '',
+      coverUrl: f.cover_url ?? '',
+      trackCount: f.track_count ?? f.songs?.length ?? 0,
+      source: f.source ?? '',
+      songs: f.songs ?? [],
+      addedTime: f.added_time ?? 0,
+      modifiedAt: f.modified_at ?? 0,
+      isDeleted: f.is_deleted ?? false,
+    }))
+  } catch (e) {
+    console.error('Load favorites failed:', e)
+  }
+}
+
+onMounted(loadPlaylists)
+onMounted(loadFavorites)
+
+// 拉取云端歌单
+onMounted(() => {
+  if (auth.netease.loggedIn && !neteasePlaylists.value.length) {
+    recommend.fetchUserPlaylists('netease')
+  }
+  if (auth.bilibili.loggedIn && !biliPlaylists.value.length) {
+    recommend.fetchUserPlaylists('bilibili')
+  }
+  // 网易云收藏专辑
+  if (auth.netease.loggedIn && !recommend.userAlbums.length) {
+    recommend.fetchUserAlbums()
+  }
+})
+
+// 监听同步完成后的歌单变更事件
+let unlistenPlaylistsChanged: UnlistenFn | null = null
+onMounted(async () => {
+  unlistenPlaylistsChanged = await listen('playlists-changed', () => {
+    loadPlaylists()
+  })
+})
+onUnmounted(() => {
+  unlistenPlaylistsChanged?.()
+})
+</script>
+
+<template>
+  <div class="library-view">
+    <header class="lib-header">
+      <h1 class="page-title">{{ t('library.title') }}</h1>
+      <button class="header-action">
+        <span class="material-symbols-rounded">sort</span>
+      </button>
+    </header>
+
+    <div class="tab-bar">
+      <button
+        v-for="(tab, i) in tabs"
+        :key="tab.label"
+        class="tab-chip"
+        :class="{ active: activeTab === i }"
+        @click="activeTab = i"
+      >
+        <span class="material-symbols-rounded" :class="{ filled: activeTab === i }" style="font-size: 18px">{{ tab.icon }}</span>
+        <span>{{ tab.label }}</span>
+      </button>
+    </div>
+
+    <!-- Tab: 本地 -->
+    <div v-if="activeTab === 0" class="playlist-list">
+      <!-- 新建歌单（对齐 Android：+ 新建歌单 行） -->
+      <div class="new-playlist-row" @click="openCreateDialog">
+        <span class="material-symbols-rounded" style="font-size: 20px">add</span>
+        <span>{{ t('library.create_playlist') }}</span>
+      </div>
+      <div class="list-divider" />
+
+      <!-- 歌单列表 -->
+      <div v-for="pl in playlists" :key="pl.id" class="playlist-item" @click="router.push({ name: 'local-playlist', params: { id: pl.id } })">
+        <div class="pl-icon" :class="{ 'has-cover': pl.cover_url }">
+          <img v-if="pl.cover_url" :src="pl.cover_url" referrerpolicy="no-referrer" class="pl-cover-img" @error="($event.target as HTMLImageElement).style.display = 'none'" />
+          <span v-else class="material-symbols-rounded filled" style="font-size: 22px">queue_music</span>
+        </div>
+        <div class="pl-info">
+          <div class="pl-name">{{ displayName(pl) }}</div>
+          <div class="pl-count">{{ t('player.track_count', { count: pl.track_count }) }}</div>
+        </div>
+        <!-- 受保护歌单不显示三点菜单 -->
+        <button v-if="!isProtectedPlaylist(pl)" class="pl-more" @click.stop="openContextMenu($event, pl)">
+          <span class="material-symbols-rounded" style="font-size: 20px">more_vert</span>
+        </button>
+      </div>
+
+      <div v-if="playlists.length === 0" class="empty-tab">
+        <div class="empty-circle"><span class="material-symbols-rounded" style="font-size: 40px">queue_music</span></div>
+        <p class="empty-title">{{ t('library.playlist_empty_title') }}</p>
+        <p class="empty-desc">{{ t('library.playlist_empty_desc') }}</p>
+      </div>
+    </div>
+
+    <!-- Tab: 收藏（同步的收藏歌单） -->
+    <div v-else-if="activeTab === 1" class="playlist-list">
+      <template v-if="favoritePlaylists.length > 0">
+        <div
+          v-for="fpl in favoritePlaylists"
+          :key="'fav-' + fpl.id"
+          class="playlist-item"
+        >
+          <div class="pl-icon has-cover" v-if="fpl.coverUrl">
+            <img :src="fpl.coverUrl" referrerpolicy="no-referrer" class="pl-cover-img" />
+          </div>
+          <div class="pl-icon" v-else>
+            <span class="material-symbols-rounded filled" style="font-size: 22px">bookmark</span>
+          </div>
+          <div class="pl-info">
+            <div class="pl-name">{{ fpl.name }}</div>
+            <div class="pl-count">{{ t('player.track_count', { count: fpl.trackCount }) }} · {{ fpl.source }}</div>
+          </div>
+          <span class="material-symbols-rounded" style="font-size: 18px; opacity: 0.3">chevron_right</span>
+        </div>
+      </template>
+      <div v-else class="empty-tab">
+        <div class="empty-circle"><span class="material-symbols-rounded" style="font-size: 40px">bookmark</span></div>
+        <p class="empty-title">{{ t('explore.no_playlists') }}</p>
+        <p class="empty-desc">{{ t('explore.login_for_playlists') }}</p>
+      </div>
+    </div>
+
+    <!-- Tab: 网易云-歌单 -->
+    <div v-else-if="activeTab === 2" class="playlist-list">
+      <template v-if="neteasePlaylists.length > 0">
+        <div
+          v-for="npl in neteasePlaylists"
+          :key="'ne-' + npl.id"
+          class="playlist-item"
+          @click="router.push({ name: 'netease-playlist', params: { id: npl.id } })"
+        >
+          <div class="pl-icon netease">
+            <img v-if="npl.coverUrl" :src="npl.coverUrl" referrerpolicy="no-referrer" class="pl-cover-img" />
+            <span v-else class="material-symbols-rounded filled" style="font-size: 22px">queue_music</span>
+          </div>
+          <div class="pl-info">
+            <div class="pl-name">{{ npl.name }}</div>
+            <div class="pl-count">{{ t('library.track_count', { count: npl.trackCount || 0 }) }}</div>
+          </div>
+          <span class="material-symbols-rounded" style="font-size: 18px; opacity: 0.3">chevron_right</span>
+        </div>
+      </template>
+      <div v-else class="empty-tab">
+        <div class="empty-circle"><span class="material-symbols-rounded" style="font-size: 40px">cloud_queue</span></div>
+        <p class="empty-title">{{ t('explore.no_playlists') }}</p>
+        <p class="empty-desc">{{ t('explore.login_for_playlists') }}</p>
+      </div>
+    </div>
+
+    <!-- Tab: 网易云-专辑 -->
+    <div v-else-if="activeTab === 3" class="playlist-list">
+      <div v-if="recommend.userAlbums.length > 0">
+        <div
+          v-for="album in recommend.userAlbums"
+          :key="album.id"
+          class="playlist-item"
+          @click="router.push({ path: '/netease-playlist/' + album.id, query: { isAlbum: '1', name: album.name } })"
+        >
+          <div class="pl-icon has-cover">
+            <img
+              v-if="album.coverUrl"
+              :src="album.coverUrl"
+              class="pl-cover-img"
+              loading="lazy"
+              referrerpolicy="no-referrer"
+            />
+            <span v-else class="material-symbols-rounded filled" style="font-size: 22px">album</span>
+          </div>
+          <div class="pl-info">
+            <div class="pl-name">{{ album.name }}</div>
+            <div class="pl-count">{{ album.artist }} · {{ t('player.track_count', { count: album.trackCount }) }}</div>
+          </div>
+          <span class="material-symbols-rounded" style="font-size: 18px; opacity: 0.3">chevron_right</span>
+        </div>
+      </div>
+      <div v-else class="empty-tab">
+        <div class="empty-circle"><span class="material-symbols-rounded" style="font-size: 40px">album</span></div>
+        <p class="empty-title">{{ t('library.empty_title', { type: t('library.albums') }) }}</p>
+        <p class="empty-desc">{{ t('library.empty_desc') }}</p>
+      </div>
+    </div>
+
+    <!-- 创建播放列表对话框 -->
+    <M3Dialog
+      v-model:open="showCreateDialog"
+      :title="t('library.create_playlist')"
+      icon="playlist_add"
+      :confirm-text="t('library.create_playlist')"
+      :confirm-disabled="!newPlaylistName.trim()"
+      @confirm="confirmCreate"
+    >
+      <M3Input
+        ref="inputRef"
+        v-model="newPlaylistName"
+        :placeholder="t('library.playlist_name_placeholder')"
+        :maxlength="50"
+        @enter="confirmCreate"
+      />
+    </M3Dialog>
+
+    <!-- 上下文菜单 -->
+    <Teleport to="body">
+      <div v-if="contextMenu.show" class="context-overlay" @click="closeContextMenu" @contextmenu.prevent="closeContextMenu">
+        <div class="context-menu" :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }">
+          <button class="ctx-item" @click="requestRename(contextMenu.playlist!)">
+            <span class="material-symbols-rounded" style="font-size: 20px">edit</span>
+            <span>{{ t('library.rename_playlist') }}</span>
+          </button>
+          <button v-if="!isProtectedPlaylist(contextMenu.playlist!)" class="ctx-item danger" @click="requestDelete(contextMenu.playlist!)">
+            <span class="material-symbols-rounded" style="font-size: 20px">delete</span>
+            <span>{{ t('library.delete_playlist') }}</span>
+          </button>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- 删除确认对话框 -->
+    <M3Dialog
+      v-model:open="showDeleteDialog"
+      :title="t('library.delete_confirm_title')"
+      icon="delete"
+      :confirm-text="t('library.delete_playlist')"
+      confirm-danger
+      @confirm="confirmDelete"
+    >
+      <p class="dialog-msg">{{ t('library.delete_confirm_msg', { name: deleteTarget ? displayName(deleteTarget) : '' }) }}</p>
+    </M3Dialog>
+
+    <!-- 重命名对话框 -->
+    <M3Dialog
+      v-model:open="showRenameDialog"
+      :title="t('library.rename_playlist')"
+      icon="edit"
+      :confirm-text="t('common.save')"
+      :confirm-disabled="!renameValue.trim() || renameValue.trim() === renameTarget?.name"
+      @confirm="confirmRename"
+    >
+      <M3Input
+        ref="renameInputRef"
+        v-model="renameValue"
+        :placeholder="t('library.rename_placeholder')"
+        :maxlength="50"
+        @enter="confirmRename"
+      />
+    </M3Dialog>
+  </div>
+</template>
+
+<style scoped lang="scss">
+.library-view { padding: 20px 28px 32px; }
+
+.lib-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 20px;
+}
+
+.page-title {
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: -0.5px;
+}
+
+.header-action {
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-full);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--md-on-surface-variant);
+  transition: background var(--duration-short);
+
+  &:hover { background: var(--md-surface-container-high); }
+}
+
+/* M3 Filter Chips */
+.tab-bar {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 20px;
+}
+
+.tab-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 16px;
+  border-radius: var(--radius-full);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--md-on-surface-variant);
+  background: transparent;
+  border: 1px solid var(--md-outline-variant);
+  transition: all var(--duration-short) var(--ease-standard);
+
+  &:hover:not(.active) {
+    background: var(--md-surface-container);
+  }
+
+  &.active {
+    background: var(--md-secondary-container);
+    color: var(--md-on-secondary-container);
+    border-color: transparent;
+    font-weight: 600;
+  }
+}
+
+/* 新建歌单行（对齐 Android） */
+.new-playlist-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 12px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--md-on-surface-variant);
+  cursor: pointer;
+  border-radius: var(--radius-md);
+  transition: background var(--duration-short);
+
+  &:hover { background: var(--md-surface-container); }
+}
+
+.list-divider {
+  height: 1px;
+  background: var(--md-outline-variant);
+  opacity: 0.3;
+  margin: 4px 12px;
+}
+
+/* 播放列表 */
+.playlist-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.playlist-item {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: background var(--duration-short);
+
+  &:hover { background: var(--md-surface-container); }
+}
+
+.new-playlist {
+  margin-bottom: 4px;
+
+  .pl-name {
+    color: var(--md-primary);
+    font-weight: 600;
+  }
+}
+
+.system-playlist {
+  .pl-name { font-weight: 600; }
+}
+
+.pl-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: var(--radius-md);
+  background: var(--md-surface-container-high);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  color: var(--md-on-surface-variant);
+
+  &.create {
+    background: var(--md-primary-container);
+    color: var(--md-on-primary-container);
+  }
+
+  &.favorite {
+    background: var(--md-tertiary-container);
+    color: var(--md-on-tertiary-container);
+  }
+
+  &.local-files {
+    background: var(--md-secondary-container);
+    color: var(--md-on-secondary-container);
+  }
+
+  &.has-cover {
+    overflow: hidden;
+    background: var(--md-surface-container-highest);
+  }
+}
+
+.pl-info { flex: 1; min-width: 0; }
+
+.pl-name {
+  font-size: 14px;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pl-count {
+  font-size: 12px;
+  color: var(--md-on-surface-variant);
+  margin-top: 2px;
+}
+
+/* 歌单封面图 */
+.pl-cover-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: inherit;
+}
+
+.pl-icon.netease {
+  background: #e74c3c20;
+  overflow: hidden;
+}
+
+.pl-icon.bilibili {
+  background: #00a1d620;
+  overflow: hidden;
+}
+
+/* 分组分割线 */
+.section-divider {
+  display: flex;
+  align-items: center;
+  padding: 16px 12px 8px;
+  gap: 10px;
+}
+
+.divider-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--md-on-surface-variant);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  white-space: nowrap;
+}
+
+.section-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--md-outline-variant);
+  opacity: 0.4;
+}
+
+.pl-more {
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-full);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--md-on-surface-variant);
+  opacity: 0;
+  transition: opacity var(--duration-short), background var(--duration-short);
+
+  .playlist-item:hover & { opacity: 1; }
+  &:hover { background: var(--md-surface-container-high); }
+}
+
+/* 空状态 */
+.empty-tab {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 80px 0;
+}
+
+.empty-circle {
+  width: 80px;
+  height: 80px;
+  border-radius: var(--radius-full);
+  background: var(--md-surface-container);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--md-on-surface-variant);
+  margin-bottom: 20px;
+  opacity: 0.5;
+}
+
+.empty-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--md-on-surface-variant);
+  margin-bottom: 4px;
+}
+
+.empty-desc {
+  font-size: 13px;
+  color: var(--md-on-surface-variant);
+  opacity: 0.5;
+}
+
+/* 上下文菜单 — 样式移至 non-scoped block（Teleport to body） */
+
+/* 对话框描述文本 */
+.dialog-msg {
+  font-size: 14px;
+  color: var(--md-on-surface-variant);
+  line-height: 1.5;
+}
+</style>
+
+<!-- 非 scoped 样式：Teleport 渲染到 body 的上下文菜单 -->
+<style lang="scss">
+.context-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 500;
+}
+
+.context-menu {
+  position: fixed;
+  min-width: 200px;
+  background: var(--md-surface-container-high);
+  border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.28), 0 2px 8px rgba(0, 0, 0, 0.15);
+  border: 1px solid var(--md-outline-variant);
+  padding: 4px 0;
+  z-index: 501;
+  animation: ctx-in 120ms ease-out;
+}
+
+@keyframes ctx-in {
+  from { opacity: 0; transform: scale(0.95) translateY(-4px); }
+  to   { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+.ctx-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 10px 16px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--md-on-surface);
+  background: none;
+  border: none;
+  cursor: pointer;
+  transition: background 150ms;
+  font-family: inherit;
+
+  &:hover { background: var(--md-surface-container-highest); }
+
+  &.danger { color: var(--md-error); }
+  &.danger:hover { background: color-mix(in srgb, var(--md-error) 8%, transparent); }
+}
+</style>

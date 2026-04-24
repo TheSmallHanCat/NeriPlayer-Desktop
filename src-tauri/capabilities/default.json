@@ -1,0 +1,14 @@
+{
+  "identifier": "default",
+  "description": "NeriPlayer default capabilities",
+  "windows": ["main", "netease-login", "bilibili-login", "youtube-login"],
+  "permissions": [
+    "core:default",
+    "shell:allow-open",
+    "store:default",
+    "dialog:default",
+    "core:window:default",
+    "core:window:allow-show",
+    "core:webview:default"
+  ]
+}

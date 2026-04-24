@@ -1,0 +1,32 @@
+{
+  "name": "neri-player-desktop",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.5.0",
+    "@tauri-apps/plugin-dialog": "^2.7.0",
+    "@tauri-apps/plugin-shell": "^2.2.0",
+    "@tauri-apps/plugin-store": "^2.4.2",
+    "animejs": "^4.0.2",
+    "pinia": "^3.0.2",
+    "vue": "^3.5.16",
+    "vue-i18n": "^11.3.2",
+    "vue-router": "^4.5.1"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.5.0",
+    "@types/animejs": "^3.1.12",
+    "@vitejs/plugin-vue": "^5.2.4",
+    "sass": "^1.89.0",
+    "typescript": "^5.8.3",
+    "vite": "^6.3.5",
+    "vue-tsc": "^2.2.10"
+  }
+}
