@@ -4,6 +4,7 @@ import { usePlayerStore, displayAlbum } from '@/stores/player'
 import { useRecommendStore } from '@/stores/recommend'
 import { useSettingsStore } from '@/stores/settings'
 import { useToastStore } from '@/stores/toast'
+import { useDownloadStore } from '@/stores/download'
 import { useI18n } from 'vue-i18n'
 import { invoke } from '@tauri-apps/api/core'
 import { extractPalette, type PaletteResult } from '@/utils/paletteExtractor'
@@ -15,10 +16,14 @@ import QueuePanel from './QueuePanel.vue'
 import AddToPlaylistDialog from './AddToPlaylistDialog.vue'
 
 const emit = defineEmits<{ collapse: [] }>()
+const props = defineProps<{
+  hideHeader?: boolean
+}>()
 const player = usePlayerStore()
 const recommend = useRecommendStore()
 const settings = useSettingsStore()
 const toast = useToastStore()
+const downloadStore = useDownloadStore()
 const { t } = useI18n()
 const showLyrics = ref(false)
 const coverLoadError = ref(false)
@@ -28,6 +33,11 @@ const showAddToPlaylist = ref(false)
 const showSpeedMenu = ref(false)
 const showSleepMenu = ref(false)
 const showMoreSheet = ref(false)
+
+// 供顶栏调用
+defineExpose({
+  toggleMore() { showMoreSheet.value = !showMoreSheet.value },
+})
 const fetchedLyrics = ref<any[]>([])
 const isFetchingLyrics = ref(false)
 
@@ -464,6 +474,14 @@ function currentQualityKey(): string {
   return ''
 }
 
+// 下载歌曲
+async function handleDownload() {
+  const track = player.currentTrack
+  if (!track) return
+  showMoreSheet.value = false
+  await downloadStore.downloadTrack(track)
+}
+
 // 分享歌曲
 async function shareSong() {
   const track = player.currentTrack
@@ -514,10 +532,80 @@ const accentBgStyle = computed(() => {
   if (!bg) return { background: 'rgb(18, 18, 18)' }
   return { background: `rgb(${bg[0]}, ${bg[1]}, ${bg[2]})` }
 })
+
+// 动态主题 CSS 变量（对齐 Android M3 动态配色）
+const dynamicColorVars = computed(() => {
+  const p = paletteResult.value
+  if (!p) return {}
+  const lv = p.lightVibrant
+
+  // RGB → HSL 转换
+  const r = lv[0] / 255, g = lv[1] / 255, b = lv[2] / 255
+  const max = Math.max(r, g, b), min = Math.min(r, g, b)
+  let h = 0, s = 0
+  const l = (max + min) / 2
+  if (max !== min) {
+    const d = max - min
+    s = l > 0.5 ? d / (2 - max - min) : d / (max + min)
+    if (max === r) h = ((g - b) / d + (g < b ? 6 : 0)) / 6
+    else if (max === g) h = ((b - r) / d + 2) / 6
+    else h = ((r - g) / d + 4) / 6
+  }
+
+  // HSL → RGB
+  const hsl2rgb = (h: number, s: number, l: number): [number, number, number] => {
+    if (s === 0) return [Math.round(l * 255), Math.round(l * 255), Math.round(l * 255)]
+    const hue2rgb = (p: number, q: number, t: number) => {
+      if (t < 0) t += 1; if (t > 1) t -= 1
+      if (t < 1/6) return p + (q - p) * 6 * t
+      if (t < 1/2) return q
+      if (t < 2/3) return p + (q - p) * (2/3 - t) * 6
+      return p
+    }
+    const q = l < 0.5 ? l * (1 + s) : l + s - l * s
+    const pp = 2 * l - q
+    return [
+      Math.round(hue2rgb(pp, q, h + 1/3) * 255),
+      Math.round(hue2rgb(pp, q, h) * 255),
+      Math.round(hue2rgb(pp, q, h - 1/3) * 255),
+    ]
+  }
+
+  // 主色：提升饱和度和亮度确保在暗背景上的可见性（对齐 Android M3 primary）
+  const primaryS = Math.min(1, s * 1.2 + 0.15) // 保底饱和度
+  const primaryL = Math.max(0.55, Math.min(0.75, l * 0.8 + 0.35)) // 亮度 55~75% 确保对比
+  const [pr, pg, pb] = hsl2rgb(h, primaryS, primaryL)
+  const primary = `rgb(${pr}, ${pg}, ${pb})`
+
+  // 主色容器：更亮、低饱和度（对齐 Android primaryContainer）
+  const pcS = Math.min(1, s * 0.8 + 0.1)
+  const pcL = Math.max(0.70, Math.min(0.85, primaryL + 0.15))
+  const [pcr, pcg, pcb] = hsl2rgb(h, pcS, pcL)
+  const primaryContainer = `rgb(${pcr}, ${pcg}, ${pcb})`
+
+  // 主色上文字：基于 primaryContainer 亮度选深/浅色
+  const pcLuma = pcr * 0.299 + pcg * 0.587 + pcb * 0.114
+  const onPrimary = pcLuma > 140 ? 'rgb(20, 18, 24)' : 'rgb(255, 255, 255)'
+
+  return {
+    '--np-primary': primary,
+    '--np-on-primary': onPrimary,
+    '--np-primary-container': primaryContainer,
+    '--np-on-surface': 'rgba(255,255,255,0.9)',
+    '--np-on-surface-variant': 'rgba(255,255,255,0.55)',
+    '--waveform-thumb-color': primary,
+  }
+})
+
+// 进度条活跃色（与 --np-primary 同步）
+const sliderActiveColor = computed(() => {
+  const vars = dynamicColorVars.value
+  return (vars as any)['--np-primary'] || '#fff'
+})
 </script>
 
 <template>
-  <div class="now-playing">
+  <div class="now-playing" :style="dynamicColorVars">
     <!-- AccentBackdrop 底色层（对齐 Android：主色降饱和+调暗） -->
     <div class="np-bg-solid" :style="accentBgStyle" />
     <!-- 动态背景：封面模糊 OR WebGL 着色器，互斥 -->
@@ -538,8 +626,8 @@ const accentBgStyle = computed(() => {
     />
     <div class="np-scrim" />
 
-    <!-- 顶栏 -->
-    <header class="np-header">
+    <!-- 顶栏（融合模式下由 TitleBar 接管） -->
+    <header v-if="!props.hideHeader" class="np-header">
       <button class="np-icon-btn" @click.stop="emit('collapse')">
         <span class="material-symbols-rounded">keyboard_arrow_down</span>
       </button>
@@ -553,11 +641,23 @@ const accentBgStyle = computed(() => {
     </header>
 
     <!-- 双栏 -->
-    <div class="np-body">
+    <div class="np-body" :class="{ 'np-body--no-header': props.hideHeader }">
       <!-- 左侧 -->
       <section class="np-left">
         <div class="cover-wrap" @contextmenu="openContextMenu($event, 'cover')">
-          <div ref="discRef" class="cover-disc">
+          <!-- Card 模式（圆角矩形，对齐 Android） -->
+          <div v-if="settings.coverStyle === 'card'" class="cover-card">
+            <img
+              v-if="coverUrl && !coverLoadError"
+              :src="coverUrl"
+              referrerpolicy="no-referrer"
+              class="cover-card-img"
+              @error="coverLoadError = true"
+            />
+            <span v-else class="material-symbols-rounded filled" style="font-size: 48px; opacity: 0.35">music_note</span>
+          </div>
+          <!-- Disc 模式（黑胶唱片） -->
+          <div v-else ref="discRef" class="cover-disc">
             <div class="cover-inner">
               <img
                 v-if="coverUrl && !coverLoadError"
@@ -582,6 +682,7 @@ const accentBgStyle = computed(() => {
           <WaveformSlider
             :progress="player.progress"
             :is-playing="player.isPlaying"
+            :active-color="sliderActiveColor"
             @seek="onSeek"
             @preview="onSliderPreview"
             @preview-end="onSliderPreviewEnd"
@@ -642,7 +743,7 @@ const accentBgStyle = computed(() => {
         <!-- 工具栏 -->
         <div class="np-toolbar">
           <button
-            class="tool-btn"
+            class="tool-btn fav-btn"
             :class="{ active: isFavorite }"
             :disabled="!player.currentTrack"
             @click="toggleFavorite"
@@ -682,9 +783,9 @@ const accentBgStyle = computed(() => {
                 min="0"
                 max="1"
                 step="0.01"
-                :value="player.volume"
+                :value="1 - player.volume"
                 class="volume-slider"
-                @input="player.setVolume(parseFloat(($event.target as HTMLInputElement).value))"
+                @input="player.setVolume(1 - parseFloat(($event.target as HTMLInputElement).value))"
               />
               <span class="volume-label">{{ Math.round(player.volume * 100) }}%</span>
             </div>
@@ -815,6 +916,25 @@ const accentBgStyle = computed(() => {
               <span class="material-symbols-rounded">share</span>
               <div class="np-more-list-info">
                 <span class="np-more-list-headline">{{ t('player.share') }}</span>
+              </div>
+            </button>
+
+            <!-- 下载（仅在线来源且未下载时显示） -->
+            <button
+              v-if="currentSource !== 'local'"
+              class="np-more-list-item"
+              :disabled="!player.currentTrack || downloadStore.isDownloaded(player.currentTrack?.id || '') || downloadStore.isDownloading(player.currentTrack?.id || '')"
+              @click="handleDownload"
+            >
+              <span class="material-symbols-rounded">{{
+                downloadStore.isDownloaded(player.currentTrack?.id || '') ? 'download_done' :
+                downloadStore.isDownloading(player.currentTrack?.id || '') ? 'downloading' : 'download'
+              }}</span>
+              <div class="np-more-list-info">
+                <span class="np-more-list-headline">{{
+                  downloadStore.isDownloaded(player.currentTrack?.id || '') ? t('download.downloaded') :
+                  downloadStore.isDownloading(player.currentTrack?.id || '') ? t('download.downloading') : t('library.tab_downloads')
+                }}</span>
               </div>
             </button>
           </template>
@@ -1108,6 +1228,10 @@ const accentBgStyle = computed(() => {
   gap: 0;
   overflow: hidden;
   min-height: 0;
+
+  &.np-body--no-header {
+    padding-top: 64px; /* 56px 播放器顶栏 + 8px 间距 */
+  }
 }
 
 .np-left {
@@ -1135,11 +1259,34 @@ const accentBgStyle = computed(() => {
 
 /* 封面 */
 .cover-wrap {
-  width: 280px;
-  height: 280px;
+  width: min(60%, 280px);
+  aspect-ratio: 1;
   filter: drop-shadow(0 16px 48px rgba(0,0,0,0.5));
   flex-shrink: 0;
 }
+
+/* Card 模式（圆角矩形，对齐 Android） */
+.cover-card {
+  width: 100%;
+  height: 100%;
+  border-radius: 24px;
+  background: linear-gradient(135deg, #2d2640 0%, #1a1724 50%, #1e1a2e 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: white;
+  overflow: hidden;
+  box-shadow: 0 16px 48px rgba(0,0,0,0.5);
+}
+
+.cover-card-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 24px;
+}
+
+/* Disc 模式（黑胶唱片） */
 
 .cover-disc {
   width: 100%;
@@ -1251,7 +1398,8 @@ const accentBgStyle = computed(() => {
 }
 
 .np-audio-codec {
-  color: var(--md-primary-container, #E8DEF8);
+  color: var(--np-primary-container, var(--md-primary-container, #E8DEF8));
+  transition: color 0.6s ease;
 }
 
 /* 控制栏 */
@@ -1275,7 +1423,7 @@ const accentBgStyle = computed(() => {
   transition: color 150ms, background 150ms;
 
   &:hover { background: rgba(255,255,255,0.07); color: rgba(255,255,255,0.75); }
-  &.active { color: white; }
+  &.active { color: var(--np-primary, white); }
   &:active { transform: scale(0.9); }
 }
 
@@ -1283,14 +1431,14 @@ const accentBgStyle = computed(() => {
   width: 52px;
   height: 52px;
   border-radius: var(--radius-full);
-  background: white;
-  color: rgb(20, 18, 24);
+  background: var(--np-primary-container, white);
+  color: var(--np-on-primary, rgb(20, 18, 24));
   display: flex;
   align-items: center;
   justify-content: center;
   box-shadow: 0 4px 24px rgba(0,0,0,0.35);
   margin: 0 4px;
-  transition: transform 150ms var(--ease-standard), box-shadow 150ms;
+  transition: transform 150ms var(--ease-standard), box-shadow 150ms, background 0.6s ease, color 0.6s ease;
   overflow: hidden;
 
   &:hover { transform: scale(1.05); box-shadow: 0 6px 28px rgba(0,0,0,0.4); }
@@ -1342,9 +1490,14 @@ const accentBgStyle = computed(() => {
   .material-symbols-rounded { font-size: 20px; }
 
   &:hover { background: rgba(255,255,255,0.06); color: rgba(255,255,255,0.65); }
-  &.active { color: var(--md-primary-container, #E8DEF8); }
+  &.active { color: var(--np-primary, var(--md-primary-container, #E8DEF8)); }
   &.disabled { opacity: 0.25; cursor: default; }
   &:active { transform: scale(0.88); }
+}
+
+// 收藏按钮活跃态保持红色（对齐 Android Color.Red.copy(alpha=0.6f)）
+.fav-btn.active {
+  color: rgba(239, 83, 80, 0.6) !important;
 }
 
 /* 音量控制 */
@@ -1372,7 +1525,6 @@ const accentBgStyle = computed(() => {
 
 .volume-slider {
   writing-mode: vertical-lr;
-  direction: rtl;
   appearance: none;
   width: 4px;
   height: 100px;

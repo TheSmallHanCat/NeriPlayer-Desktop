@@ -2,19 +2,48 @@
 import { ref, computed } from 'vue'
 import { usePlayerStore } from '@/stores/player'
 import { useI18n } from 'vue-i18n'
+import QueuePanel from './QueuePanel.vue'
 
 const emit = defineEmits<{ expand: [] }>()
 const player = usePlayerStore()
 const { t } = useI18n()
+
+const showQueue = ref(false)
+const showVolumeSlider = ref(false)
 
 // 进度条拖拽
 const isDraggingProgress = ref(false)
 const dragRatio = ref(0)
 const progressTrackRef = ref<HTMLDivElement>()
 
-// 拖拽时显示本地值，否则显示 player 真实值
+// 悬浮时间提示
+const isHoveringProgress = ref(false)
+const hoverRatio = ref(0)
+const hoverX = ref(0) // tooltip 的绝对 X 位置（相对于 progress-track）
+
 const displayProgress = computed(() =>
   isDraggingProgress.value ? dragRatio.value : player.progress
+)
+
+/** 悬浮位置对应的时间（ms） */
+const hoverTimeMs = computed(() => {
+  const ratio = isDraggingProgress.value ? dragRatio.value : hoverRatio.value
+  return ratio * player.durationMs
+})
+
+/** 格式化 ms 为 m:ss */
+function formatTime(ms: number): string {
+  const totalSeconds = Math.floor(Math.max(0, ms) / 1000)
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+  return `${minutes}:${seconds.toString().padStart(2, '0')}`
+}
+
+const hoverTimeFormatted = computed(() => formatTime(hoverTimeMs.value))
+
+/** 是否显示 tooltip（悬浮或拖拽中且有有效时长） */
+const showTooltip = computed(() =>
+  (isHoveringProgress.value || isDraggingProgress.value) && player.durationMs > 0
 )
 
 function onProgressPointerDown(e: PointerEvent) {
@@ -26,6 +55,7 @@ function onProgressPointerDown(e: PointerEvent) {
 }
 
 function onProgressPointerMove(e: PointerEvent) {
+  updateHoverPosition(e)
   if (!isDraggingProgress.value) return
   updateDragRatio(e)
 }
@@ -33,10 +63,25 @@ function onProgressPointerMove(e: PointerEvent) {
 function onProgressPointerUp(e: PointerEvent) {
   if (!isDraggingProgress.value) return
   updateDragRatio(e)
-  // 释放后才真正 seek
   player.seekTo(dragRatio.value * player.durationMs)
   isDraggingProgress.value = false
   progressTrackRef.value?.releasePointerCapture(e.pointerId)
+}
+
+function onProgressMouseEnter() {
+  isHoveringProgress.value = true
+}
+
+function onProgressMouseLeave() {
+  isHoveringProgress.value = false
+}
+
+function updateHoverPosition(e: PointerEvent) {
+  const el = progressTrackRef.value!
+  const rect = el.getBoundingClientRect()
+  const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
+  hoverRatio.value = ratio
+  hoverX.value = e.clientX - rect.left
 }
 
 function updateDragRatio(e: PointerEvent) {
@@ -44,59 +89,124 @@ function updateDragRatio(e: PointerEvent) {
   const rect = el.getBoundingClientRect()
   dragRatio.value = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
 }
+
+const volumeIcon = computed(() => {
+  if (player.volume === 0) return 'volume_off'
+  if (player.volume < 0.5) return 'volume_down'
+  return 'volume_up'
+})
 </script>
 
 <template>
-  <div class="mini-player" @click="emit('expand')">
+  <div class="mini-player">
+    <!-- 顶部进度条（通栏） -->
     <div
       ref="progressTrackRef"
       class="progress-track"
-      :class="{ dragging: isDraggingProgress }"
+      :class="{ dragging: isDraggingProgress, hovering: isHoveringProgress }"
       @pointerdown="onProgressPointerDown"
       @pointermove="onProgressPointerMove"
       @pointerup="onProgressPointerUp"
       @pointercancel="onProgressPointerUp"
+      @mouseenter="onProgressMouseEnter"
+      @mouseleave="onProgressMouseLeave"
       @click.stop
     >
       <div class="progress-fill" :style="{ width: `${displayProgress * 100}%` }" />
+      <!-- 悬浮时间提示 -->
+      <div
+        v-if="showTooltip"
+        class="progress-tooltip"
+        :style="{ left: `${hoverX}px` }"
+      >{{ hoverTimeFormatted }}</div>
     </div>
 
-    <div class="mini-body">
-      <div class="mini-cover" :class="{ playing: player.isPlaying }">
-        <img
-          v-if="player.currentTrack?.coverUrl"
-          :src="player.currentTrack.coverUrl"
-          referrerpolicy="no-referrer"
-          class="mini-cover-img"
-        />
-        <span v-else class="material-symbols-rounded filled" style="font-size: 20px; opacity: 0.6">music_note</span>
+    <!-- 三栏主体 -->
+    <div class="mp-body">
+      <!-- 左：封面 + 歌曲信息 -->
+      <div class="mp-left" @click="emit('expand')">
+        <div class="mp-cover" :class="{ playing: player.isPlaying }">
+          <img
+            v-if="player.currentTrack?.coverUrl"
+            :src="player.currentTrack.coverUrl"
+            referrerpolicy="no-referrer"
+            class="mp-cover-img"
+          />
+          <span v-else class="material-symbols-rounded filled" style="font-size: 20px; opacity: 0.6">music_note</span>
+        </div>
+        <div class="mp-info">
+          <div class="mp-title">{{ player.currentTrack?.title || t('player.not_playing') }}</div>
+          <div class="mp-artist">{{ player.currentTrack?.artist || '' }}</div>
+        </div>
       </div>
 
-      <div class="mini-info">
-        <div class="mini-title">{{ player.currentTrack?.title || t('player.not_playing') }}</div>
-        <div class="mini-artist">{{ player.currentTrack?.artist || '' }}</div>
-      </div>
-
-      <div class="mini-actions" @click.stop>
-        <button class="mini-btn" @click="player.togglePlayPause()" :disabled="player.isLoadingAudio">
-          <transition name="mini-icon" mode="out-in">
+      <!-- 中：播放控制 -->
+      <div class="mp-center">
+        <button
+          class="mp-ctrl-btn small"
+          :class="{ active: player.shuffleEnabled }"
+          @click="player.toggleShuffle()"
+        >
+          <span class="material-symbols-rounded">shuffle</span>
+        </button>
+        <button class="mp-ctrl-btn" @click="player.previous()">
+          <span class="material-symbols-rounded filled">skip_previous</span>
+        </button>
+        <button class="mp-play-btn" @click="player.togglePlayPause()" :disabled="player.isLoadingAudio">
+          <transition name="mp-icon" mode="out-in">
             <span
               v-if="player.isLoadingAudio"
-              class="material-symbols-rounded spinning mini-play-icon"
+              class="material-symbols-rounded spinning"
               key="loading"
             >progress_activity</span>
             <span
               v-else
-              class="material-symbols-rounded filled mini-play-icon"
+              class="material-symbols-rounded filled"
               :key="player.isPlaying ? 'p' : 'r'"
             >{{ player.isPlaying ? 'pause' : 'play_arrow' }}</span>
           </transition>
         </button>
-        <button class="mini-btn" @click="player.next()">
-          <span class="material-symbols-rounded filled" style="font-size: 22px">skip_next</span>
+        <button class="mp-ctrl-btn" @click="player.next()">
+          <span class="material-symbols-rounded filled">skip_next</span>
+        </button>
+        <button
+          class="mp-ctrl-btn small"
+          :class="{ active: player.repeatMode !== 'off' }"
+          @click="player.toggleRepeatMode()"
+        >
+          <span class="material-symbols-rounded">{{ player.repeatMode === 'one' ? 'repeat_one' : 'repeat' }}</span>
+        </button>
+      </div>
+
+      <!-- 右：音量 + 队列 + 展开 -->
+      <div class="mp-right">
+        <div class="mp-volume-wrap">
+          <button class="mp-tool-btn" @click="showVolumeSlider = !showVolumeSlider">
+            <span class="material-symbols-rounded">{{ volumeIcon }}</span>
+          </button>
+          <div v-if="showVolumeSlider" class="mp-volume-popover" @mouseleave="showVolumeSlider = false">
+            <input
+              type="range"
+              min="0"
+              max="1"
+              step="0.01"
+              :value="1 - player.volume"
+              class="mp-volume-slider"
+              @input="player.setVolume(1 - parseFloat(($event.target as HTMLInputElement).value))"
+            />
+          </div>
+        </div>
+        <button class="mp-tool-btn" @click="showQueue = !showQueue">
+          <span class="material-symbols-rounded">queue_music</span>
+        </button>
+        <button class="mp-tool-btn" @click="emit('expand')">
+          <span class="material-symbols-rounded">keyboard_arrow_up</span>
         </button>
       </div>
     </div>
+
+    <!-- 队列面板 -->
+    <QueuePanel v-if="showQueue" @close="showQueue = false" />
   </div>
 </template>
 
@@ -106,35 +216,28 @@ function updateDragRatio(e: PointerEvent) {
   bottom: 0;
   left: 80px;
   right: 0;
-  height: 72px;
+  height: 76px;
   background: var(--md-surface-container);
-  cursor: pointer;
   z-index: 100;
   border-top: 1px solid var(--md-surface-container-highest);
-  transition: background 150ms;
-
-  &:hover { background: var(--md-surface-container-high); }
 }
 
+/* ── 顶部进度条（通栏） ── */
 .progress-track {
-  height: 3px;
+  height: 5px;
   background: var(--md-surface-container-highest);
   position: relative;
   cursor: pointer;
   touch-action: none;
-  // 扩大点击区域（不改变视觉高度）
+
+  // 扩大点击区域
   &::before {
     content: '';
     position: absolute;
-    top: -6px;
+    top: -8px;
     left: 0;
     right: 0;
-    bottom: -4px;
-  }
-  // 拖拽时加粗
-  transition: height 120ms ease;
-  &.dragging, &:hover {
-    height: 5px;
+    bottom: -6px;
   }
 }
 
@@ -145,33 +248,82 @@ function updateDragRatio(e: PointerEvent) {
   transition: width 200ms linear;
   position: relative;
 
+  // 拖拽时取消 width transition，消除延迟感
+  .progress-track.dragging & {
+    transition: none;
+  }
+
+  // thumb 圆点（始终可见）
   &::after {
     content: '';
     position: absolute;
-    right: -1px;
-    top: -2px;
-    width: 7px;
-    height: 7px;
+    right: -5px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 10px;
+    height: 10px;
     border-radius: 50%;
     background: var(--md-primary);
-    opacity: 0;
-    transition: opacity 150ms;
+    box-shadow: 0 0 4px rgba(0,0,0,0.15);
+    transition: transform 150ms var(--ease-standard);
   }
 
-  .mini-player:hover &::after { opacity: 1; }
+  .progress-track.hovering &::after,
+  .progress-track.dragging &::after {
+    transform: translateY(-50%) scale(1.3);
+  }
 }
 
-.mini-body {
+/* 时间提示 tooltip */
+.progress-tooltip {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  transform: translateX(-50%);
+  background: var(--md-inverse-surface, #313033);
+  color: var(--md-inverse-on-surface, #F4EFF4);
+  font-size: 11px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  padding: 3px 8px;
+  border-radius: 6px;
+  white-space: nowrap;
+  pointer-events: none;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+  animation: tooltip-fade-in 100ms var(--ease-decelerate);
+}
+
+@keyframes tooltip-fade-in {
+  from { opacity: 0; transform: translateX(-50%) translateY(4px); }
+  to { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+
+/* ── 三栏主体 ── */
+.mp-body {
   display: flex;
   align-items: center;
-  padding: 0 20px;
-  height: 69px;
-  gap: 14px;
+  padding: 0 16px;
+  height: 71px; // 76 - 5px 进度条
+  gap: 16px;
 }
 
-.mini-cover {
-  width: 46px;
-  height: 46px;
+/* ── 左：封面 + 信息 ── */
+.mp-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 1;
+  min-width: 0;
+  cursor: pointer;
+  padding: 4px;
+  border-radius: var(--radius-md);
+  transition: background 150ms;
+
+  &:hover { background: var(--md-surface-container-high); }
+}
+
+.mp-cover {
+  width: 48px;
+  height: 48px;
   border-radius: var(--radius-sm);
   background: var(--md-surface-variant);
   display: flex;
@@ -179,23 +331,24 @@ function updateDragRatio(e: PointerEvent) {
   justify-content: center;
   flex-shrink: 0;
   transition: border-radius 500ms var(--ease-standard);
+  overflow: hidden;
 
   &.playing { border-radius: var(--radius-md); }
 }
 
-.mini-cover-img {
+.mp-cover-img {
   width: 100%;
   height: 100%;
   object-fit: cover;
   border-radius: inherit;
 }
 
-.mini-info {
+.mp-info {
   flex: 1;
   min-width: 0;
 }
 
-.mini-title {
+.mp-title {
   font-size: 14px;
   font-weight: 600;
   line-height: 1.3;
@@ -204,7 +357,7 @@ function updateDragRatio(e: PointerEvent) {
   white-space: nowrap;
 }
 
-.mini-artist {
+.mp-artist {
   font-size: 12px;
   color: var(--md-on-surface-variant);
   line-height: 1.3;
@@ -213,29 +366,122 @@ function updateDragRatio(e: PointerEvent) {
   white-space: nowrap;
 }
 
-.mini-actions {
+/* ── 中：播放控制 ── */
+.mp-center {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: 4px;
 }
 
-.mini-btn {
-  width: 44px;
-  height: 44px;
+.mp-ctrl-btn {
+  width: 36px;
+  height: 36px;
   border-radius: var(--radius-full);
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: background 150ms;
+  color: var(--md-on-surface-variant);
+  transition: color 150ms, background 150ms;
+
+  .material-symbols-rounded { font-size: 24px; }
+
+  &:hover { background: var(--md-surface-variant); color: var(--md-on-surface); }
+  &:active { transform: scale(0.9); }
+  &.active { color: var(--md-primary); }
+
+  &.small {
+    width: 32px;
+    height: 32px;
+    .material-symbols-rounded { font-size: 20px; }
+  }
+}
+
+.mp-play-btn {
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-full);
+  background: var(--md-primary);
+  color: var(--md-on-primary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 4px;
+  transition: transform 150ms, box-shadow 150ms;
   overflow: hidden;
 
-  &:hover { background: var(--md-surface-variant); }
+  .material-symbols-rounded { font-size: 26px; }
+
+  &:hover { transform: scale(1.06); box-shadow: 0 2px 12px rgba(0,0,0,0.2); }
+  &:active { transform: scale(0.92); }
+  &:disabled { opacity: 0.5; }
+}
+
+/* ── 右：工具按钮 ── */
+.mp-right {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px;
+}
+
+.mp-tool-btn {
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-full);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--md-on-surface-variant);
+  transition: color 150ms, background 150ms;
+
+  .material-symbols-rounded { font-size: 20px; }
+
+  &:hover { background: var(--md-surface-variant); color: var(--md-on-surface); }
   &:active { transform: scale(0.9); }
 }
 
-.mini-play-icon {
-  font-size: 28px;
-  display: block;
+/* 音量弹窗 */
+.mp-volume-wrap {
+  position: relative;
+}
+
+.mp-volume-popover {
+  position: absolute;
+  bottom: 44px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--md-surface-container-high);
+  border-radius: 12px;
+  padding: 14px 10px;
+  box-shadow: 0 4px 24px rgba(0,0,0,0.25);
+  border: 1px solid var(--md-outline-variant);
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.mp-volume-slider {
+  writing-mode: vertical-lr;
+  appearance: none;
+  width: 4px;
+  height: 100px;
+  background: var(--md-surface-container-highest);
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+  direction: rtl;
+
+  &::-webkit-slider-thumb {
+    appearance: none;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--md-primary);
+    cursor: pointer;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.2);
+  }
 }
 
 .spinning {
@@ -244,13 +490,13 @@ function updateDragRatio(e: PointerEvent) {
 
 @keyframes spin { to { transform: rotate(360deg); } }
 
-/* 播放/暂停切换动画 */
-.mini-icon-enter-active {
-  transition: transform 180ms var(--ease-decelerate), opacity 120ms var(--ease-decelerate);
+/* 图标切换动画 */
+.mp-icon-enter-active {
+  transition: transform 150ms var(--ease-decelerate), opacity 100ms var(--ease-decelerate);
 }
-.mini-icon-leave-active {
-  transition: transform 100ms var(--ease-accelerate), opacity 80ms var(--ease-accelerate);
+.mp-icon-leave-active {
+  transition: transform 80ms var(--ease-accelerate), opacity 60ms var(--ease-accelerate);
 }
-.mini-icon-enter-from { transform: scale(0.6); opacity: 0; }
-.mini-icon-leave-to { transform: scale(0.6); opacity: 0; }
+.mp-icon-enter-from { transform: scale(0.5); opacity: 0; }
+.mp-icon-leave-to { transform: scale(0.5); opacity: 0; }
 </style>

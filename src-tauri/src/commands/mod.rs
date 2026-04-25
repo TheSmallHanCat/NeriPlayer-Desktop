@@ -6,3 +6,4 @@ pub mod settings_cmd;
 pub mod auth_cmd;
 pub mod recommend_cmd;
 pub mod sync_cmd;
+pub mod download_cmd;

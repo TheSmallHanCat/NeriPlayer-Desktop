@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
-import { useRouter } from 'vue-router'
+import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
+import { useRouter, useRoute } from 'vue-router'
 
 defineOptions({ name: 'LibraryView' })
 import { useI18n } from 'vue-i18n'
@@ -8,17 +8,20 @@ import { useLibraryStore } from '@/stores/library'
 import { usePlayerStore } from '@/stores/player'
 import { useRecommendStore } from '@/stores/recommend'
 import { useAuthStore } from '@/stores/auth'
+import { useDownloadStore } from '@/stores/download'
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import M3Dialog from '@/components/ui/M3Dialog.vue'
 import M3Input from '@/components/ui/M3Input.vue'
 
 const router = useRouter()
+const route = useRoute()
 const { t } = useI18n()
 const library = useLibraryStore()
 const player = usePlayerStore()
 const recommend = useRecommendStore()
 const auth = useAuthStore()
+const downloadStore = useDownloadStore()
 
 // 喜欢的歌曲计数
 const likedCount = computed(() => recommend.likedSongIds.size)
@@ -26,10 +29,21 @@ const likedCount = computed(() => recommend.likedSongIds.size)
 const tabs = computed(() => [
   { label: t('library.tab_local'), icon: 'folder_open', key: 'local' },
   { label: t('library.tab_favorites'), icon: 'favorite', key: 'favorites' },
+  { label: t('library.tab_downloads'), icon: 'download', key: 'downloads' },
   { label: t('library.tab_netease_playlists'), icon: 'queue_music', key: 'netease_playlists' },
   { label: t('library.tab_netease_albums'), icon: 'album', key: 'netease_albums' },
 ])
-const activeTab = ref(0)
+// 根据路由 query 参数设置初始标签
+const tabKeyToIndex: Record<string, number> = { local: 0, favorites: 1, downloads: 2, netease_playlists: 3, netease_albums: 4 }
+const initialTab = typeof route.query.tab === 'string' ? (tabKeyToIndex[route.query.tab] ?? 0) : 0
+const activeTab = ref(initialTab)
+
+// 监听路由 query 变化（同页面内导航）
+watch(() => route.query.tab, (tab) => {
+  if (typeof tab === 'string' && tab in tabKeyToIndex) {
+    activeTab.value = tabKeyToIndex[tab]
+  }
+})
 
 // 真实播放列表
 interface PlaylistInfo { id: number; name: string; track_count: number; modified_at: number; cover_url: string | null }
@@ -202,6 +216,65 @@ async function loadFavorites() {
 
 onMounted(loadPlaylists)
 onMounted(loadFavorites)
+onMounted(() => downloadStore.loadDownloads())
+
+// 下载相关
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return bytes + ' B'
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
+  return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
+}
+
+function playDownloadedTrack(dl: any) {
+  player.play({
+    id: dl.id,
+    title: dl.title,
+    artist: dl.artist,
+    album: dl.album,
+    durationMs: dl.durationMs,
+    coverUrl: dl.coverUrl || '',
+    audioUrl: dl.filePath,
+  })
+}
+
+// 下载列表右键菜单
+const dlContextMenu = ref<{ show: boolean; x: number; y: number; track: any | null }>({
+  show: false, x: 0, y: 0, track: null,
+})
+
+function openDlContextMenu(e: MouseEvent, track: any) {
+  const btn = e.currentTarget as HTMLElement
+  const rect = btn.getBoundingClientRect()
+  const menuWidth = 200
+  const menuHeight = 60
+  let x = rect.left - menuWidth - 4
+  let y = rect.top
+  if (x < 8) x = rect.right + 4
+  if (x + menuWidth > window.innerWidth - 8) x = window.innerWidth - menuWidth - 8
+  if (y + menuHeight > window.innerHeight - 8) y = window.innerHeight - menuHeight - 8
+  dlContextMenu.value = { show: true, x, y, track }
+}
+
+function closeDlContextMenu() {
+  dlContextMenu.value.show = false
+}
+
+// 删除下载确认
+const showDlDeleteDialog = ref(false)
+const dlDeleteTarget = ref<any>(null)
+
+function requestDlDelete(track: any) {
+  closeDlContextMenu()
+  dlDeleteTarget.value = track
+  showDlDeleteDialog.value = true
+}
+
+async function confirmDlDelete() {
+  if (!dlDeleteTarget.value) return
+  await downloadStore.deleteDownload(dlDeleteTarget.value.id)
+  showDlDeleteDialog.value = false
+  dlDeleteTarget.value = null
+}
 
 // 拉取云端歌单
 onMounted(() => {
@@ -311,8 +384,39 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <!-- Tab: 网易云-歌单 -->
+    <!-- Tab: 下载 -->
     <div v-else-if="activeTab === 2" class="playlist-list">
+      <template v-if="downloadStore.downloads.length > 0">
+        <div
+          v-for="dl in downloadStore.downloads"
+          :key="'dl-' + dl.id"
+          class="playlist-item"
+          @click="playDownloadedTrack(dl)"
+        >
+          <div class="pl-icon has-cover" v-if="dl.coverUrl">
+            <img :src="dl.coverUrl" referrerpolicy="no-referrer" class="pl-cover-img" />
+          </div>
+          <div class="pl-icon" v-else>
+            <span class="material-symbols-rounded filled" style="font-size: 22px">music_note</span>
+          </div>
+          <div class="pl-info">
+            <div class="pl-name">{{ dl.title }}</div>
+            <div class="pl-count">{{ dl.artist }} · {{ formatFileSize(dl.fileSize) }} · {{ dl.source }}</div>
+          </div>
+          <button class="pl-more" @click.stop="openDlContextMenu($event, dl)">
+            <span class="material-symbols-rounded" style="font-size: 20px">more_vert</span>
+          </button>
+        </div>
+      </template>
+      <div v-else class="empty-tab">
+        <div class="empty-circle"><span class="material-symbols-rounded" style="font-size: 40px">download</span></div>
+        <p class="empty-title">{{ t('library.downloads_empty_title') }}</p>
+        <p class="empty-desc">{{ t('library.downloads_empty_desc') }}</p>
+      </div>
+    </div>
+
+    <!-- Tab: 网易云-歌单 -->
+    <div v-else-if="activeTab === 3" class="playlist-list">
       <template v-if="neteasePlaylists.length > 0">
         <div
           v-for="npl in neteasePlaylists"
@@ -339,7 +443,7 @@ onUnmounted(() => {
     </div>
 
     <!-- Tab: 网易云-专辑 -->
-    <div v-else-if="activeTab === 3" class="playlist-list">
+    <div v-else-if="activeTab === 4" class="playlist-list">
       <div v-if="recommend.userAlbums.length > 0">
         <div
           v-for="album in recommend.userAlbums"
@@ -370,6 +474,30 @@ onUnmounted(() => {
         <p class="empty-desc">{{ t('library.empty_desc') }}</p>
       </div>
     </div>
+
+    <!-- 下载项上下文菜单 -->
+    <Teleport to="body">
+      <div v-if="dlContextMenu.show" class="context-overlay" @click="closeDlContextMenu" @contextmenu.prevent="closeDlContextMenu">
+        <div class="context-menu" :style="{ left: dlContextMenu.x + 'px', top: dlContextMenu.y + 'px' }">
+          <button class="ctx-item danger" @click="requestDlDelete(dlContextMenu.track!)">
+            <span class="material-symbols-rounded" style="font-size: 20px">delete</span>
+            <span>{{ t('common.delete') }}</span>
+          </button>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- 删除下载确认对话框 -->
+    <M3Dialog
+      v-model:open="showDlDeleteDialog"
+      :title="t('download.delete_confirm')"
+      icon="delete"
+      :confirm-text="t('common.delete')"
+      confirm-danger
+      @confirm="confirmDlDelete"
+    >
+      <p class="dialog-msg">{{ t('library.delete_confirm_msg', { name: dlDeleteTarget?.title || '' }) }}</p>
+    </M3Dialog>
 
     <!-- 创建播放列表对话框 -->
     <M3Dialog

@@ -78,6 +78,7 @@
     "tab_favorites": "お気に入り",
     "tab_netease_playlists": "網易雲 - プレイリスト",
     "tab_netease_albums": "網易雲 - アルバム",
+    "tab_downloads": "ダウンロード",
     "playlists": "プレイリスト",
     "albums": "アルバム",
     "artists": "アーティスト",
@@ -99,7 +100,9 @@
     "netease_playlists": "网易云 · プレイリスト",
     "bilibili_favorites": "ビリビリ · お気に入り",
     "remove_from_playlist": "プレイリストから削除",
-    "remove_confirm_msg": "「{name}」をプレイリストから削除しますか？"
+    "remove_confirm_msg": "「{name}」をプレイリストから削除しますか？",
+    "downloads_empty_title": "ダウンロードした曲はありません",
+    "downloads_empty_desc": "再生画面のその他オプションから曲をダウンロード"
   },
   "common": {
     "save": "保存",
@@ -110,6 +113,14 @@
     "ten_thousand": "万",
     "hour_short": "時間",
     "minute_short": "分"
+  },
+  "download": {
+    "downloading": "ダウンロード中...",
+    "downloaded": "ダウンロード済み",
+    "download_failed": "ダウンロードに失敗",
+    "delete_confirm": "ダウンロードを削除",
+    "deleted": "ダウンロードを削除しました",
+    "file_size": "ファイルサイズ"
   },
   "player": {
     "not_playing": "再生停止中",

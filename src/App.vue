@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { usePlayerStore } from '@/stores/player'
+import { usePlayerStore, displayAlbum } from '@/stores/player'
 import { useSyncStore } from '@/stores/sync'
 import { useAuthStore } from '@/stores/auth'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
@@ -12,6 +12,7 @@ import TitleBar from '@/components/TitleBar.vue'
 
 const player = usePlayerStore()
 const isNowPlayingOpen = ref(false)
+const nowPlayingRef = ref<InstanceType<typeof NowPlaying> | null>(null)
 
 const hasMiniPlayer = computed(() => !!player.currentTrack)
 
@@ -91,12 +92,21 @@ onUnmounted(() => {
     <transition name="slide-up">
       <NowPlaying
         v-if="isNowPlayingOpen"
+        ref="nowPlayingRef"
+        hide-header
         @collapse="isNowPlayingOpen = false"
       />
     </transition>
 
-    <!-- 顶栏浮于所有内容之上，背景透明融入主体 -->
-    <TitleBar :force-light="isNowPlayingOpen" />
+    <!-- 顶栏浮于所有内容之上，与播放器融合 -->
+    <TitleBar
+      :force-light="isNowPlayingOpen"
+      :now-playing="isNowPlayingOpen"
+      :track-name="player.currentTrack?.title"
+      :album-name="player.currentTrack?.album ? displayAlbum(player.currentTrack.album) : ''"
+      @collapse="isNowPlayingOpen = false"
+      @toggle-more="nowPlayingRef?.toggleMore?.()"
+    />
 
     <AppToast />
   </div>
@@ -118,7 +128,7 @@ onUnmounted(() => {
   overflow-x: hidden;
   transition: padding-bottom 300ms var(--ease-standard);
 
-  &.has-mini-player { padding-bottom: 72px; }
+  &.has-mini-player { padding-bottom: 76px; }
 }
 
 /* MiniPlayer 入场退场 */

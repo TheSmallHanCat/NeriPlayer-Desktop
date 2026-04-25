@@ -257,6 +257,19 @@ export class KaraokeLine {
     }
   }
 
+  /** 获取当前行的高亮进度 (0..1)，用于辉光跟踪 */
+  getProgress(): number {
+    if (!this.isEnabled || this.totalDuration <= 0) return 0
+    // 取第一个 mask animation 的 currentTime 作为参考
+    for (const rw of this.words) {
+      if (rw.maskAnimation) {
+        const ct = (rw.maskAnimation.currentTime as number) || 0
+        return Math.max(0, Math.min(1, ct / this.totalDuration))
+      }
+    }
+    return 0
+  }
+
   dispose(): void {
     for (const rw of this.words) {
       rw.floatAnimation?.cancel()

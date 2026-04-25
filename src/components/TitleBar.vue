@@ -1,11 +1,22 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import type { UnlistenFn } from '@tauri-apps/api/event'
 
-defineProps<{
+const props = defineProps<{
   forceLight?: boolean
+  nowPlaying?: boolean
+  trackName?: string
+  albumName?: string
 }>()
+
+const emit = defineEmits<{
+  collapse: []
+  toggleMore: []
+}>()
+
+const { t } = useI18n()
 
 const isMaximized = ref(false)
 let unlistenResize: UnlistenFn | null = null
@@ -45,14 +56,39 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <header class="title-bar" :class="{ 'tb-force-light': forceLight }" data-tauri-drag-region>
-    <div class="tb-brand" data-tauri-drag-region>
+  <header
+    class="title-bar"
+    :class="{ 'tb-force-light': forceLight, 'tb-np-mode': nowPlaying }"
+    data-tauri-drag-region
+  >
+    <!-- 普通模式：logo + 名称 -->
+    <div v-if="!nowPlaying" class="tb-brand" data-tauri-drag-region>
       <img src="/app-icon.png" alt="logo" class="tb-icon" />
       <span class="tb-title">NeriPlayer</span>
     </div>
 
+    <!-- 播放器模式：折叠按钮（覆盖 logo 区域） -->
+    <div v-else class="tb-np-left">
+      <button class="tb-np-btn tb-np-collapse" type="button" @click="emit('collapse')">
+        <span class="material-symbols-rounded">keyboard_arrow_down</span>
+      </button>
+    </div>
+
+    <!-- 播放器模式：居中播放信息 -->
+    <div v-if="nowPlaying" class="tb-np-center" data-tauri-drag-region>
+      <span class="tb-np-label">{{ t('player.now_playing') }}</span>
+      <span class="tb-np-track">{{ albumName || trackName || '' }}</span>
+    </div>
+
+    <!-- 拖拽占位 -->
     <div class="tb-drag" data-tauri-drag-region></div>
 
+    <!-- 播放器模式：更多按钮 -->
+    <button v-if="nowPlaying" class="tb-np-btn tb-np-more" type="button" @click="emit('toggleMore')">
+      <span class="material-symbols-rounded">more_vert</span>
+    </button>
+
+    <!-- 窗口控制 -->
     <div class="tb-controls">
       <button class="tb-ctrl" type="button" @click="minimize" title="最小化">
         <svg width="12" height="12" viewBox="0 0 12 12">
@@ -92,20 +128,29 @@ onUnmounted(() => {
   user-select: none;
   z-index: 1000;
   pointer-events: none;
-  transition: color 300ms var(--ease-standard);
+  transition: color 300ms var(--ease-standard),
+              height 300ms var(--ease-standard);
+
+  &.tb-np-mode {
+    height: 56px;
+    padding-top: 8px;
+  }
 }
 
-/* NowPlaying 打开时，强制使用亮色文字（深色背景） */
 .title-bar.tb-force-light {
   color: rgba(255, 255, 255, 0.9);
 }
 
 .tb-brand,
 .tb-controls,
-.tb-ctrl {
+.tb-ctrl,
+.tb-np-left,
+.tb-np-btn,
+.tb-np-more {
   pointer-events: auto;
 }
 
+/* ========== 普通模式 ========== */
 .tb-brand {
   display: flex;
   align-items: center;
@@ -132,6 +177,96 @@ onUnmounted(() => {
   opacity: 0.85;
 }
 
+/* ========== 播放器模式 ========== */
+.tb-np-left {
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+  -webkit-app-region: no-drag;
+}
+
+.tb-np-btn {
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-full);
+  color: inherit;
+  opacity: 0.8;
+  cursor: pointer;
+  transition: background var(--duration-short) var(--ease-standard),
+              opacity var(--duration-short) var(--ease-standard);
+
+  &:hover {
+    background: rgba(255, 255, 255, 0.1);
+    opacity: 1;
+  }
+
+  .material-symbols-rounded {
+    font-size: 24px;
+  }
+}
+
+.tb-np-collapse .material-symbols-rounded {
+  font-size: 30px;
+}
+
+.tb-np-center {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  pointer-events: auto;
+  -webkit-app-region: drag;
+  min-width: 0;
+}
+
+.tb-np-label {
+  font-size: 10px;
+  font-weight: 600;
+  color: inherit;
+  opacity: 0.45;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  line-height: 1.2;
+}
+
+.tb-np-track {
+  font-size: 12px;
+  font-weight: 600;
+  color: inherit;
+  opacity: 0.85;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 300px;
+  line-height: 1.2;
+}
+
+.tb-np-more {
+  align-self: center;
+  margin-right: 4px;
+}
+
+/* 播放器模式下窗口控制按钮适配更高的顶栏 */
+.tb-np-mode .tb-ctrl {
+  width: 48px;
+}
+
+.tb-np-mode .tb-ctrl svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* ========== 公共 ========== */
 .tb-drag {
   flex: 1;
   -webkit-app-region: drag;
@@ -163,8 +298,11 @@ onUnmounted(() => {
   }
 }
 
-/* 浅色主题 + 非 forceLight 时，hover 用深色遮罩 */
 .light-theme .title-bar:not(.tb-force-light) .tb-ctrl:hover {
+  background: rgba(0, 0, 0, 0.06);
+}
+
+.light-theme .title-bar:not(.tb-force-light) .tb-np-btn:hover {
   background: rgba(0, 0, 0, 0.06);
 }
 

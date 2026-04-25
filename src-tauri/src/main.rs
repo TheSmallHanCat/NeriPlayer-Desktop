@@ -1,7 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use neri_player_desktop::commands::{
-    player_cmd, library_cmd, search_cmd, lyrics_cmd, settings_cmd, auth_cmd, recommend_cmd, sync_cmd,
+    player_cmd, library_cmd, search_cmd, lyrics_cmd, settings_cmd, auth_cmd, recommend_cmd, sync_cmd, download_cmd,
 };
 use neri_player_desktop::state::AppState;
 use neri_player_desktop::auth;
@@ -139,6 +139,9 @@ fn main() {
             sync_cmd::configure_webdav_sync,
             sync_cmd::sync_webdav,
             sync_cmd::disconnect_webdav_sync,
+            download_cmd::download_track,
+            download_cmd::list_downloads,
+            download_cmd::delete_download,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

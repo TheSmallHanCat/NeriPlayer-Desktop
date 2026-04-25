@@ -140,6 +140,10 @@ export const usePlayerStore = defineStore('player', () => {
   let eventsInitialized = false
   // seek 后忽略 position 事件的时间窗口
   let seekGuardUntil = 0
+  // 记住最后 seek 的位置，用于 resume 时重新 seek（防止后端丢失 seek-while-paused）
+  let lastSeekedMs: number | null = null
+  // seek 后第一次接受 position 事件时的目标位置，用于检测偏差过大的旧事件
+  let seekTargetMs: number | null = null
 
   function initEvents() {
     if (eventsInitialized) return
@@ -147,8 +151,14 @@ export const usePlayerStore = defineStore('player', () => {
 
     // 监听后端播放位置更新
     listen<{ positionMs: number; durationMs: number }>('player:position', (e) => {
-      // seek 后 500ms 内忽略回推的旧位置
+      // seek 后时间窗口内忽略旧位置事件
       if (Date.now() < seekGuardUntil) return
+      // guard 过期后，检测第一批事件是否偏离 seek 目标过远（>3s = 后端还没跳到位）
+      if (seekTargetMs !== null) {
+        const delta = Math.abs(e.payload.positionMs - seekTargetMs)
+        if (delta > 3000) return // 丢弃偏差过大的旧事件
+        seekTargetMs = null // 第一个合理事件通过后清除
+      }
       positionMs.value = e.payload.positionMs
       durationMs.value = e.payload.durationMs
     })
@@ -159,24 +169,9 @@ export const usePlayerStore = defineStore('player', () => {
       beatImpulse.value = e.payload.beat
     })
 
-    // 监听播放完成
+    // 监听播放完成（对齐 Android handleTrackEnded）
     listen('player:track-ended', () => {
-      // 睡眠定时器：播完当前曲目模式
-      if (sleepTimerMode.value === 'end_of_track') {
-        pause()
-        cancelSleepTimer()
-        return
-      }
-      // 睡眠定时器：播完当前歌单模式
-      if (sleepTimerMode.value === 'end_of_queue') {
-        const isLast = queueIndex.value >= queue.value.length - 1
-        if (isLast && repeatMode.value !== 'all') {
-          pause()
-          cancelSleepTimer()
-          return
-        }
-      }
-      next()
+      handleTrackEnded()
     })
   }
 
@@ -268,8 +263,21 @@ export const usePlayerStore = defineStore('player', () => {
 
   async function togglePlayPause() {
     try {
+      // 先恢复播放（不阻塞在 seek 上）
       const playing = await invoke<boolean>('toggle_play_pause')
       isPlaying.value = playing
+      // 恢复播放后，如果有 pending seek 位置，立即重新 seek（fire-and-forget）
+      if (playing && lastSeekedMs !== null) {
+        const pos = lastSeekedMs
+        lastSeekedMs = null
+        seekTargetMs = pos
+        // 延长 guard 保护 seek 期间不被旧位置覆盖
+        seekGuardUntil = Date.now() + 2000
+        invoke('seek', { positionMs: pos }).then(() => {
+          positionMs.value = pos
+          seekGuardUntil = Date.now() + 800
+        }).catch(() => {})
+      }
     } catch {
       isPlaying.value = !isPlaying.value
     }
@@ -288,6 +296,8 @@ export const usePlayerStore = defineStore('player', () => {
   async function seekTo(ms: number) {
     const posMs = Math.round(ms)
     positionMs.value = posMs
+    lastSeekedMs = posMs
+    seekTargetMs = posMs
     seekGuardUntil = Date.now() + 1500
     try {
       await invoke('seek', { positionMs: posMs })
@@ -298,17 +308,57 @@ export const usePlayerStore = defineStore('player', () => {
     }
   }
 
-  async function next() {
-    if (queue.value.length === 0) return
-    // 单曲循环：重播当前
-    if (repeatMode.value === 'one') {
-      seekTo(0)
-      resume()
+  /**
+   * 播放结束自动触发（对齐 Android handleTrackEnded）
+   * - repeat_one: 重新播放当前
+   * - repeat_all: next(force=true) 强制推进
+   * - off: 还有下一首则推进，否则停止播放但保留队列
+   */
+  async function handleTrackEnded() {
+    // 睡眠定时器
+    const isLast = !shuffleEnabled.value && queueIndex.value >= queue.value.length - 1
+    if (sleepTimerMode.value === 'end_of_track') {
+      await pause()
+      cancelSleepTimer()
       return
     }
+    if (sleepTimerMode.value === 'end_of_queue') {
+      if (isLast && repeatMode.value !== 'all') {
+        await pause()
+        cancelSleepTimer()
+        return
+      }
+    }
+
+    if (repeatMode.value === 'one') {
+      // 单曲循环：重新播放当前曲目
+      if (currentTrack.value) {
+        await play(currentTrack.value)
+      }
+    } else if (repeatMode.value === 'all') {
+      // 列表循环：强制推进到下一首（到末尾回到开头）
+      await next(true)
+    } else {
+      // 顺序播放：还有下一首则推进，否则停止
+      if (shuffleEnabled.value || queueIndex.value < queue.value.length - 1) {
+        await next(false)
+      } else {
+        // 停止播放但保留队列（对齐 Android stopPlaybackPreservingQueue）
+        await pause()
+        positionMs.value = 0
+      }
+    }
+  }
+
+  /**
+   * 用户手动下一首（对齐 Android nextImpl）
+   * - 不管 repeat_one，始终推进
+   * - force=true 时列表末尾回绕
+   */
+  async function next(force: boolean = false) {
+    if (queue.value.length === 0) return
     let nextIdx: number
     if (shuffleEnabled.value) {
-      // 随机选一首（排除当前）
       if (queue.value.length === 1) {
         nextIdx = 0
       } else {
@@ -317,22 +367,36 @@ export const usePlayerStore = defineStore('player', () => {
         } while (nextIdx === queueIndex.value)
       }
     } else {
-      nextIdx = queueIndex.value + 1
-      if (nextIdx >= queue.value.length) {
-        if (repeatMode.value === 'all') nextIdx = 0
-        else { isPlaying.value = false; return }
+      if (queueIndex.value < queue.value.length - 1) {
+        nextIdx = queueIndex.value + 1
+      } else {
+        if (force || repeatMode.value === 'all') {
+          nextIdx = 0
+        } else {
+          // 已在末尾，不动
+          return
+        }
       }
     }
     await play(queue.value[nextIdx])
   }
 
+  /**
+   * 用户手动上一首（对齐 Android previousImpl）
+   * - 播放超过 3 秒则回到开头
+   * - 非 shuffle：只有 repeat_all 才回绕到末尾
+   */
   async function previous() {
     if (queue.value.length === 0) return
     if (positionMs.value > 3000) {
       seekTo(0)
     } else {
-      const prevIdx = queueIndex.value > 0 ? queueIndex.value - 1 : queue.value.length - 1
-      await play(queue.value[prevIdx])
+      if (queueIndex.value > 0) {
+        await play(queue.value[queueIndex.value - 1])
+      } else if (repeatMode.value === 'all') {
+        await play(queue.value[queue.value.length - 1])
+      }
+      // else: 已在开头且非列表循环，不动
     }
   }
 
@@ -353,6 +417,47 @@ export const usePlayerStore = defineStore('player', () => {
       shuffleEnabled.value = enabled
     } catch {
       shuffleEnabled.value = !shuffleEnabled.value
+    }
+  }
+
+  /**
+   * 统一播放模式循环切换：顺序播放 → 列表循环 → 单曲循环 → 随机播放 → 顺序播放
+   * 合并 repeat + shuffle 为一个按钮的逻辑
+   */
+  type PlayMode = 'sequential' | 'repeat_all' | 'repeat_one' | 'shuffle'
+
+  const playMode = computed<PlayMode>(() => {
+    if (shuffleEnabled.value) return 'shuffle'
+    if (repeatMode.value === 'all') return 'repeat_all'
+    if (repeatMode.value === 'one') return 'repeat_one'
+    return 'sequential'
+  })
+
+  async function cyclePlayMode() {
+    const current = playMode.value
+    switch (current) {
+      case 'sequential':
+        // → 列表循环
+        if (shuffleEnabled.value) await toggleShuffle()
+        repeatMode.value = 'all'
+        try { await invoke<string>('cycle_repeat') } catch {}
+        break
+      case 'repeat_all':
+        // → 单曲循环
+        repeatMode.value = 'one'
+        try { await invoke<string>('cycle_repeat') } catch {}
+        break
+      case 'repeat_one':
+        // → 随机播放
+        repeatMode.value = 'off'
+        try { await invoke<string>('cycle_repeat') } catch {}
+        if (!shuffleEnabled.value) await toggleShuffle()
+        break
+      case 'shuffle':
+        // → 顺序播放
+        if (shuffleEnabled.value) await toggleShuffle()
+        repeatMode.value = 'off'
+        break
     }
   }
 
@@ -410,15 +515,21 @@ export const usePlayerStore = defineStore('player', () => {
   // 从队列移除指定索引
   function removeFromQueue(index: number) {
     if (index < 0 || index >= queue.value.length) return
+    const wasCurrentTrack = index === queueIndex.value
     queue.value.splice(index, 1)
     if (queue.value.length === 0) {
       queueIndex.value = -1
+      currentTrack.value = null
+      pause()
       return
     }
     if (index < queueIndex.value) {
       queueIndex.value--
-    } else if (index === queueIndex.value) {
+    } else if (wasCurrentTrack) {
+      // 被删除的是当前曲目，索引保持（指向下一首），但不超界
       queueIndex.value = Math.min(queueIndex.value, queue.value.length - 1)
+      // 同步 currentTrack 到新索引指向的曲目
+      currentTrack.value = queue.value[queueIndex.value]
     }
   }
 
@@ -470,7 +581,7 @@ export const usePlayerStore = defineStore('player', () => {
     playbackSpeed, sleepTimerMode, sleepRemainingSeconds,
     progress, currentTimeFormatted, durationFormatted,
     play, togglePlayPause, pause, resume, seekTo, next, previous,
-    toggleRepeatMode, toggleShuffle, setVolume, setSpeed,
+    toggleRepeatMode, toggleShuffle, cyclePlayMode, playMode, setVolume, setSpeed,
     startSleepTimer, startSleepTimerEndOfTrack, startSleepTimerEndOfQueue, cancelSleepTimer,
     playAll, shufflePlay, addToQueueNext, addToQueueEnd, removeFromQueue, clearQueue,
     updateCurrentTrackInfo, restoreOriginalTrackInfo, hasOriginalTrackInfo, replayWithQuality,

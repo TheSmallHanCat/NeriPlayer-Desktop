@@ -49,6 +49,9 @@ export const useSettingsStore = defineStore('settings', () => {
   const cloudMusicOffset = ref(loadSetting('cloud_offset', 0))
   const qqMusicOffset = ref(loadSetting('qq_offset', 0))
 
+  // 封面样式
+  const coverStyle = ref<'disc' | 'card'>(loadSetting('cover_style', 'card'))
+
   // 动效
   const advancedLyrics = ref(loadSetting('advanced_lyrics', true))
   const dynamicBackground = ref(loadSetting('dynamic_bg', true))
@@ -68,7 +71,7 @@ export const useSettingsStore = defineStore('settings', () => {
 
   // 自动持久化：watch 所有 ref，变化时保存
   const allSettings: Record<string, any> = {
-    dark_mode: darkMode, theme_color: themeColor,
+    dark_mode: darkMode, theme_color: themeColor, cover_style: coverStyle,
     default_screen: defaultScreen, cover_badge: showCoverBadge,
     np_title: showNowPlayingTitle, np_toolbar: showToolbarDock,
     quality_switch: showQualitySwitch, audio_codec: showAudioCodec,
@@ -94,7 +97,7 @@ export const useSettingsStore = defineStore('settings', () => {
   }
 
   return {
-    darkMode, themeColor,
+    darkMode, themeColor, coverStyle,
     defaultScreen, showCoverBadge, showNowPlayingTitle, showToolbarDock,
     showQualitySwitch, showAudioCodec, showAudioSpec, lyricFontScale,
     crossfade, normalizeVolume,

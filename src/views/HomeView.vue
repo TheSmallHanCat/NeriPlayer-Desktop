@@ -117,19 +117,13 @@ function formatDuration(ms: number): string {
 
 async function handleQuickAction(action: string) {
   if (action === 'local') {
-    try {
-      const { open } = await import('@tauri-apps/plugin-dialog')
-      const dir = await open({ directory: true, title: 'Select Music Folder' })
-      if (dir) library.scanDirectory(dir as string)
-    } catch (e) {
-      console.error('Dialog failed:', e)
-    }
+    router.push({ name: 'library', query: { tab: 'local' } })
   } else if (action === 'recent') {
     router.push('/recent')
   } else if (action === 'favorites') {
-    router.push({ name: 'local-playlist', params: { id: -1001 } })
+    router.push({ name: 'library', query: { tab: 'favorites' } })
   } else if (action === 'downloads') {
-    // TODO: 下载管理页
+    router.push({ name: 'library', query: { tab: 'downloads' } })
   }
 }
 

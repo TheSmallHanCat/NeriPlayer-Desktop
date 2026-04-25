@@ -78,6 +78,7 @@
     "tab_favorites": "Favorites",
     "tab_netease_playlists": "Netease - Playlists",
     "tab_netease_albums": "Netease - Albums",
+    "tab_downloads": "Downloads",
     "playlists": "Playlists",
     "albums": "Albums",
     "artists": "Artists",
@@ -99,7 +100,9 @@
     "netease_playlists": "Netease · Playlists",
     "bilibili_favorites": "Bilibili · Favorites",
     "remove_from_playlist": "Remove from Playlist",
-    "remove_confirm_msg": "Remove \"{name}\" from this playlist?"
+    "remove_confirm_msg": "Remove \"{name}\" from this playlist?",
+    "downloads_empty_title": "No downloaded songs",
+    "downloads_empty_desc": "Download songs from the Now Playing more options menu"
   },
   "common": {
     "save": "Save",
@@ -110,6 +113,14 @@
     "ten_thousand": "0K",
     "hour_short": "h",
     "minute_short": "min"
+  },
+  "download": {
+    "downloading": "Downloading...",
+    "downloaded": "Downloaded",
+    "download_failed": "Download failed",
+    "delete_confirm": "Delete Download",
+    "deleted": "Download deleted",
+    "file_size": "File size"
   },
   "player": {
     "not_playing": "Not Playing",

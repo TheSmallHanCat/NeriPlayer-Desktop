@@ -78,6 +78,7 @@
     "tab_favorites": "收藏",
     "tab_netease_playlists": "網易雲 - 歌單",
     "tab_netease_albums": "網易雲 - 專輯",
+    "tab_downloads": "下載",
     "playlists": "播放清單",
     "albums": "專輯",
     "artists": "藝人",
@@ -99,7 +100,9 @@
     "netease_playlists": "網易雲 · 歌單",
     "bilibili_favorites": "嗶哩嗶哩 · 收藏",
     "remove_from_playlist": "從歌單中移除",
-    "remove_confirm_msg": "確定要從歌單中移除「{name}」嗎？"
+    "remove_confirm_msg": "確定要從歌單中移除「{name}」嗎？",
+    "downloads_empty_title": "還沒有下載的歌曲",
+    "downloads_empty_desc": "在播放頁點擊更多選項下載歌曲到本機"
   },
   "common": {
     "save": "儲存",
@@ -110,6 +113,14 @@
     "ten_thousand": "萬",
     "hour_short": "小時",
     "minute_short": "分鐘"
+  },
+  "download": {
+    "downloading": "正在下載...",
+    "downloaded": "已下載",
+    "download_failed": "下載失敗",
+    "delete_confirm": "刪除下載",
+    "deleted": "已刪除下載",
+    "file_size": "檔案大小"
   },
   "player": {
     "not_playing": "未在播放",

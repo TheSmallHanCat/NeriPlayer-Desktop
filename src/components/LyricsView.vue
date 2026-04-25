@@ -145,6 +145,7 @@ watch(() => props.lyrics, () => {
 
 onMounted(() => {
   containerRef.value?.addEventListener('scroll', onScroll, { passive: true })
+  glowAnimFrame = requestAnimationFrame(updateGlow)
   nextTick(() => {
     buildKaraokeLines()
     scrollToActive(activeIndex.value, 'instant')
@@ -158,6 +159,7 @@ onMounted(() => {
 onUnmounted(() => {
   containerRef.value?.removeEventListener('scroll', onScroll)
   if (scrollEndTimer) clearTimeout(scrollEndTimer)
+  cancelAnimationFrame(glowAnimFrame)
   for (const kl of karaokeLines.value.values()) kl.dispose()
 })
 
@@ -166,9 +168,73 @@ function dist(index: number): number {
   return Math.abs(index - activeIndex.value)
 }
 
+// 有符号距离：正数=在活跃行下方，负数=在活跃行上方
+function signedDist(index: number): number {
+  if (activeIndex.value < 0) return 0
+  return index - activeIndex.value
+}
+
 function blurForDist(d: number): number {
   if (!settings.lyricBlur || d === 0) return 0
-  return Math.min(d * 0.35, 2)
+  // 对齐 Android blurForDistance: maxBlur * multiplier
+  // maxBlur = lyricBlurAmount (settings, 默认 1.5) 作为基准
+  const maxBlur = settings.lyricBlurAmount
+  if (d === 1) return maxBlur * 1.0
+  if (d === 2) return maxBlur * 1.5
+  if (d === 3) return maxBlur * 2.0
+  if (d === 4) return maxBlur * 2.5
+  return maxBlur * 4.0
+}
+
+function scaleForDist(d: number): number {
+  // 对齐 Android LyricVisualSpec + farScaleFalloffPerStep
+  if (d === 0) return 1.06   // activeScale
+  if (d === 1) return 0.95   // nearScale
+  // farScale - (d-2) * falloff, coerceIn(farScaleMin, farScale)
+  return Math.max(0.80, 0.88 - (d - 2) * 0.02)
+}
+
+function alphaForDist(d: number, hasBlur: boolean): number {
+  if (d === 0) return 0.95
+  if (d === 1) return hasBlur ? 0.72 : 0.4
+  const base = hasBlur ? 0.40 : 0.35
+  return Math.max(0.16, base - 0.08 * (d - 2))
+}
+
+// 3D 翻页倾斜角度（对齐 Android 9deg）
+function tiltForLine(index: number): string {
+  if (activeIndex.value < 0) return 'rotateX(0)'
+  const sd = signedDist(index)
+  if (sd === 0) return 'rotateX(0)'
+  if (sd < 0) return 'rotateX(9deg)'   // 上方行向上翻
+  return 'rotateX(-9deg)'               // 下方行向下翻
+}
+
+function tiltOriginForLine(index: number): string {
+  if (activeIndex.value < 0) return 'left center'
+  const sd = signedDist(index)
+  if (sd < 0) return 'left bottom'   // 上方行以底边为轴
+  if (sd > 0) return 'left top'      // 下方行以顶边为轴
+  return 'left center'
+}
+
+// --- 径向辉光跟踪（跟随 karaoke 进度） ---
+const glowX = ref(0)  // 辉光 X 位置百分比 0..100
+let glowAnimFrame = 0
+let glowSmoothed = 0
+
+function updateGlow() {
+  const idx = activeIndex.value
+  if (idx >= 0) {
+    const kl = karaokeLines.value.get(idx)
+    if (kl && typeof kl.getProgress === 'function') {
+      const target = kl.getProgress() * 100
+      // 平滑跟随 110ms
+      glowSmoothed += (target - glowSmoothed) * 0.15
+      glowX.value = glowSmoothed
+    }
+  }
+  glowAnimFrame = requestAnimationFrame(updateGlow)
 }
 
 function seekToLine(line: LyricLine) {
@@ -178,7 +244,7 @@ function seekToLine(line: LyricLine) {
 </script>
 
 <template>
-  <div class="lyrics-scroll" ref="containerRef" :style="{ '--lyric-font-scale': settings.lyricFontScale }">
+  <div class="lyrics-scroll" ref="containerRef" :style="{ '--lyric-font-scale': settings.lyricFontScale, perspective: '800px' }">
     <div class="lyrics-pad-top" />
 
     <div
@@ -192,11 +258,20 @@ function seekToLine(line: LyricLine) {
       }"
       :style="isClearText ? {} : {
         '--blur': `${blurForDist(dist(i))}px`,
-        '--scale': i === activeIndex ? '1.015' : '0.965',
-        '--alpha': i === activeIndex ? '0.95' : (activeIndex >= 0 && i < activeIndex ? '0.7' : '0.6'),
+        '--scale': String(scaleForDist(dist(i))),
+        '--alpha': String(alphaForDist(dist(i), settings.lyricBlur)),
+        '--tilt': tiltForLine(i),
+        '--tilt-origin': tiltOriginForLine(i),
       }"
       @click="seekToLine(line)"
     >
+      <!-- 径向辉光（仅活跃行） -->
+      <div
+        v-if="i === activeIndex"
+        class="lyric-glow"
+        :style="{ '--glow-x': glowX + '%' }"
+      />
+
       <!-- 逐字模式：KaraokeLine 直接操作这个容器的 DOM -->
       <span v-if="hasWordTiming(line)" class="line-text kw-container" />
 
@@ -223,6 +298,7 @@ function seekToLine(line: LyricLine) {
   padding: 0 24px;
   mask-image: linear-gradient(to bottom, transparent 0%, black 20px, black calc(100% - 100px), transparent 100%);
   -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 20px, black calc(100% - 100px), transparent 100%);
+  perspective: 800px;
   &::-webkit-scrollbar { display: none; }
   scrollbar-width: none;
 }
@@ -231,13 +307,14 @@ function seekToLine(line: LyricLine) {
 .lyrics-pad-bottom { height: 50%; }
 
 .lyric-line {
+  position: relative;
   padding: 8px 16px;
-  transform-origin: left center;
-  transform: scale(var(--scale, 1));
+  transform-origin: var(--tilt-origin, left center);
+  transform: scale(var(--scale, 1)) var(--tilt, rotateX(0));
   opacity: var(--alpha, 1);
   filter: blur(var(--blur, 0px));
   transition:
-    transform 500ms cubic-bezier(0, 0, 0.2, 1),
+    transform 260ms cubic-bezier(0.2, 0, 0, 1),
     opacity 400ms cubic-bezier(0.4, 0, 0.2, 1),
     filter 300ms ease-out;
   cursor: pointer;
@@ -247,7 +324,10 @@ function seekToLine(line: LyricLine) {
     opacity: 0.6 !important;
     filter: blur(0px) !important;
   }
-  &.active { filter: none; }
+  &.active {
+    filter: none;
+    transform-origin: left center;
+  }
   &.clear-text {
     transform: none;
     opacity: 0.5;
@@ -257,15 +337,39 @@ function seekToLine(line: LyricLine) {
   }
 }
 
+// 径向辉光（活跃行，跟随 karaoke 进度）
+.lyric-glow {
+  position: absolute;
+  top: 50%;
+  left: var(--glow-x, 0%);
+  width: 96px;
+  height: 96px;
+  transform: translate(-50%, -50%);
+  background: radial-gradient(circle, var(--np-primary, rgba(255,255,255,0.85)) 0%, transparent 70%);
+  opacity: 0.35;
+  pointer-events: none;
+  filter: blur(24px);
+  will-change: left, opacity;
+  transition: opacity 0.3s ease;
+  animation: glow-pulse 1.2s ease-in-out infinite alternate;
+}
+
+@keyframes glow-pulse {
+  from { transform: translate(-50%, -50%) scale(1); opacity: 0.3; }
+  to { transform: translate(-50%, -50%) scale(1.15); opacity: 0.45; }
+}
+
 .line-text {
   display: block;
   font-size: calc(24px * var(--lyric-font-scale, 1));
   font-weight: 700;
   line-height: 1.5;
   letter-spacing: -0.2px;
-  color: rgba(255, 255, 255, 0.2);
+  color: rgba(255, 255, 255, 0.5);
   white-space: pre-wrap;
   transition: color 0.4s;
+  position: relative;
+  z-index: 1;
   .active & { color: white; }
   .clear-text & { color: rgba(255, 255, 255, 0.45); }
   .clear-text.active & { color: white; }
@@ -280,17 +384,16 @@ function seekToLine(line: LyricLine) {
 
 .line-tl {
   display: block;
-  font-size: calc(14px * var(--lyric-font-scale, 1));
+  font-size: calc(16px * var(--lyric-font-scale, 1));
   font-weight: 400;
-  // 翻译 color alpha 必须低于歌词文字的 color alpha
-  // 歌词文字 base = 0.2，翻译 = 0.15（始终比歌词少 5% 左右）
-  // 行级 opacity 已经控制了整体亮度
-  color: rgba(255, 255, 255, 0.15);
+  color: rgba(255, 255, 255, 0.25);
   margin-top: 4px;
   line-height: 1.35;
+  position: relative;
+  z-index: 1;
 
-  .active & { color: rgba(255, 255, 255, 0.45); }
-  .past & { color: rgba(255, 255, 255, 0.15); }
+  .active & { color: rgba(255, 255, 255, 0.85); }
+  .past & { color: rgba(255, 255, 255, 0.2); }
 }
 
 .tl-fade-enter-active { transition: opacity 0.25s ease; }

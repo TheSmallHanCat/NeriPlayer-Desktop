@@ -175,9 +175,9 @@ function clamp01(v: number) { return Math.max(0, Math.min(1, v)) }
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: #fff;
+  background: var(--waveform-thumb-color, #fff);
   transform: translate(-50%, -50%);
-  transition: width 150ms, height 150ms;
+  transition: width 150ms, height 150ms, background 0.6s ease;
   box-shadow: 0 0 4px rgba(255, 255, 255, 0.3);
   pointer-events: none;
   z-index: 1;
