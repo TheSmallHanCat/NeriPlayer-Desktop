@@ -185,7 +185,21 @@
     "info_applied": "已应用歌曲信息",
     "info_restored": "已恢复原始信息",
     "quality_changing": "正在切换音质...",
-    "not_available": "当前来源不支持"
+    "not_available": "当前来源不支持",
+    "source_netease": "网易云",
+    "source_bilibili": "哔哩哔哩",
+    "source_youtube": "YouTube",
+    "source_local": "本地",
+    "lyrics_editor": "歌词编辑器",
+    "lyrics_editor_placeholder": "[00:00.00] 在此粘贴 LRC 歌词...",
+    "lyrics_apply": "应用歌词",
+    "lyrics_applied": "歌词已应用",
+    "lyrics_clear": "清除歌词",
+    "lyrics_cleared": "歌词已清除",
+    "lyrics_fill": "歌词填充",
+    "lyrics_fill_desc": "搜索并填充歌词",
+    "lyrics_fill_applied": "歌词已填充",
+    "pitch": "音调"
   },
   "recent": {
     "title": "最近播放",

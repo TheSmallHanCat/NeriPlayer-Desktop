@@ -28,6 +28,7 @@ let gl: WebGLRenderingContext | null = null
 let program: WebGLProgram | null = null
 let animFrame = 0
 let startTime = 0
+let beatEnvelope = 0
 
 // Uniform locations
 let uResolution: WebGLUniformLocation | null = null
@@ -112,7 +113,9 @@ function render() {
   gl.uniform2f(uResolution, w, h)
   gl.uniform1f(uTime, time)
   gl.uniform1f(uMusicLevel, props.musicLevel)
-  gl.uniform1f(uBeat, props.beatImpulse)
+  // Beat 脉冲衰减：0.92/frame @60fps → ~500ms 自然衰减，对齐 Android beatEnv * 0.92f
+  beatEnvelope = Math.max(beatEnvelope * 0.92, props.beatImpulse)
+  gl.uniform1f(uBeat, beatEnvelope)
   gl.uniform4fv(uColor0, props.colors[0])
   gl.uniform4fv(uColor1, props.colors[1])
   gl.uniform4fv(uColor2, props.colors[2])

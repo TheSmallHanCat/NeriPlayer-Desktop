@@ -37,30 +37,54 @@ fn main() {
                     std::thread::sleep(Duration::from_millis(200));
 
                     let state = handle.state::<AppState>();
-                    let mut player = state.player.lock();
 
-                    if player.current_path.is_some() {
-                        if player.is_playing || player.position_ms() > 0 {
-                            let _ = handle.emit("player:position", serde_json::json!({
-                                "positionMs": player.position_ms(),
-                                "durationMs": player.duration_ms,
-                                "isPlaying": player.is_playing,
+                    // ── Phase 1: 快速快照（锁持有 <1μs） ──
+                    let snapshot = {
+                        let player = state.player.lock();
+                        if player.current_path.is_none() {
+                            last_ended = false;
+                            continue;
+                        }
+                        (
+                            player.is_playing,
+                            player.position_ms(),
+                            player.duration_ms,
+                            player.shared_audio_level.clone(),
+                        )
+                    }; // ← 锁在此释放
+
+                    let (snap_playing, snap_pos, snap_dur, shared_level) = snapshot;
+
+                    // ── Phase 2: 发射事件（无锁） ──
+                    if snap_playing || snap_pos > 0 {
+                        let _ = handle.emit("player:position", serde_json::json!({
+                            "positionMs": snap_pos,
+                            "durationMs": snap_dur,
+                            "isPlaying": snap_playing,
+                        }));
+                    }
+
+                    if snap_playing {
+                        if let Ok(audio) = shared_level.lock() {
+                            let _ = handle.emit("player:audio-level", serde_json::json!({
+                                "level": audio.level,
+                                "beat": audio.beat_impulse,
                             }));
                         }
+                    }
 
-                        // 检测播放完成
+                    // ── Phase 3: 慢检测 — 重新获取锁（is_finished 内部有 200ms recv） ──
+                    {
+                        let mut player = state.player.lock();
                         let finished = player.is_finished() && player.is_playing && player.position_ms() > 500;
                         if finished && !last_ended {
                             last_ended = true;
-                            // 先保存时间状态再释放锁，避免 position 回零
                             player.mark_ended();
                             drop(player);
                             let _ = handle.emit("player:track-ended", ());
                         } else if !finished {
                             last_ended = false;
                         }
-                    } else {
-                        last_ended = false;
                     }
                 }
             });

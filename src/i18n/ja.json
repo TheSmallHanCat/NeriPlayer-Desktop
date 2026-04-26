@@ -185,7 +185,21 @@
     "info_applied": "曲情報を適用しました",
     "info_restored": "元の情報に戻しました",
     "quality_changing": "音質を切り替え中...",
-    "not_available": "このソースでは利用できません"
+    "not_available": "このソースでは利用できません",
+    "source_netease": "NetEase",
+    "source_bilibili": "Bilibili",
+    "source_youtube": "YouTube",
+    "source_local": "ローカル",
+    "lyrics_editor": "歌詞エディター",
+    "lyrics_editor_placeholder": "[00:00.00] LRC歌詞をここに貼り付け...",
+    "lyrics_apply": "歌詞を適用",
+    "lyrics_applied": "歌詞を適用しました",
+    "lyrics_clear": "歌詞をクリア",
+    "lyrics_cleared": "歌詞をクリアしました",
+    "lyrics_fill": "歌詞を補完",
+    "lyrics_fill_desc": "検索して歌詞を補完",
+    "lyrics_fill_applied": "歌詞を補完しました",
+    "pitch": "ピッチ"
   },
   "recent": {
     "title": "最近再生",

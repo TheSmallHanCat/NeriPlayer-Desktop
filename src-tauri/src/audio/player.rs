@@ -5,16 +5,20 @@
 use std::io::{BufReader, Cursor};
 use std::sync::mpsc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use rodio::{Decoder, OutputStream, Sink, Source};
+use rodio::source::SeekError;
 
+use crate::audio::analyzer::{AudioAnalyzer, SharedAudioLevel};
 use crate::error::{AppError, AppResult};
 
 /// 播放操作 recv 超时（网络音频解码可能慢）
 const RECV_TIMEOUT: Duration = Duration::from_secs(30);
 /// seek/query 等快操作超时
 const FAST_RECV_TIMEOUT: Duration = Duration::from_secs(5);
+/// 分析帧大小（样本数），~46ms@44.1kHz
+const ANALYSIS_FRAME_SIZE: usize = 2048;
 
 // 音频来源——seek 时需要重建 decoder
 enum AudioSource {
@@ -47,6 +51,112 @@ enum AudioCmd {
     },
 }
 
+// ─── AnalyzingSource ─────────────────────────────────────────────────────────
+// rodio Source 包装器：透传所有音频数据，同时在 ring buffer 中累积样本，
+// 每 ANALYSIS_FRAME_SIZE 个样本调用 AudioAnalyzer 分析一帧。
+
+struct AnalyzingSource<S> {
+    inner: S,
+    analyzer: AudioAnalyzer,
+    shared: Arc<Mutex<SharedAudioLevel>>,
+    buffer: Vec<f32>,
+    channels: u16,
+    sample_rate: u32,
+}
+
+impl<S> AnalyzingSource<S>
+where
+    S: Source<Item = i16> + Send,
+{
+    fn new(source: S, shared: Arc<Mutex<SharedAudioLevel>>) -> Self {
+        let channels = source.channels();
+        let sample_rate = source.sample_rate();
+        let mut analyzer = AudioAnalyzer::new();
+        analyzer.configure(sample_rate, ANALYSIS_FRAME_SIZE);
+        Self {
+            inner: source,
+            analyzer,
+            shared,
+            buffer: Vec::with_capacity(ANALYSIS_FRAME_SIZE),
+            channels,
+            sample_rate,
+        }
+    }
+
+    fn flush_buffer(&mut self) {
+        if self.buffer.is_empty() {
+            return;
+        }
+        let result = self.analyzer.analyze_frame(&self.buffer);
+        if let Ok(mut lock) = self.shared.lock() {
+            lock.level = result.level;
+            lock.beat_impulse = result.beat_impulse;
+        }
+        self.buffer.clear();
+    }
+}
+
+impl<S> Iterator for AnalyzingSource<S>
+where
+    S: Source<Item = i16> + Send,
+{
+    type Item = i16;
+
+    fn next(&mut self) -> Option<i16> {
+        let sample = self.inner.next()?;
+        // 转换为 f32 并存入 buffer（仅取单声道用于分析）
+        // 对于多声道，仅取第一个声道的样本
+        let buf_len = self.buffer.len();
+        let ch = self.channels as usize;
+        // 每 channels 个样本取一个（左声道），保持分析帧对应实际时长
+        if ch <= 1 || buf_len == 0 || (buf_len % 1 == 0) {
+            // 简化：所有样本都收集，analyze_frame 按总样本数计算
+            self.buffer.push(sample as f32 / 32768.0);
+        }
+        if self.buffer.len() >= ANALYSIS_FRAME_SIZE {
+            self.flush_buffer();
+        }
+        Some(sample)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
+    }
+}
+
+impl<S> Source for AnalyzingSource<S>
+where
+    S: Source<Item = i16> + Send,
+{
+    fn current_frame_len(&self) -> Option<usize> {
+        self.inner.current_frame_len()
+    }
+
+    fn channels(&self) -> u16 {
+        self.channels
+    }
+
+    fn sample_rate(&self) -> u32 {
+        self.sample_rate
+    }
+
+    fn total_duration(&self) -> Option<Duration> {
+        self.inner.total_duration()
+    }
+
+    fn try_seek(&mut self, pos: Duration) -> Result<(), SeekError> {
+        let result = self.inner.try_seek(pos);
+        if result.is_ok() {
+            // seek 成功，重置分析器状态避免残留数据影响
+            self.analyzer.reset();
+            self.buffer.clear();
+        }
+        result
+    }
+}
+
+// ─── PlayerEngine ────────────────────────────────────────────────────────────
+
 pub struct PlayerEngine {
     cmd_tx: mpsc::Sender<AudioCmd>,
     thread_alive: Arc<AtomicBool>,
@@ -57,13 +167,16 @@ pub struct PlayerEngine {
     pub duration_ms: u64,
     play_start_time: Option<Instant>,
     accumulated_ms: u64,
+    /// 共享音频电平数据，供 main.rs ticker 线程读取
+    pub shared_audio_level: Arc<Mutex<SharedAudioLevel>>,
 }
 
 unsafe impl Send for PlayerEngine {}
 
 impl PlayerEngine {
     pub fn new() -> Self {
-        let (tx, alive) = Self::spawn_audio_thread();
+        let shared_level = SharedAudioLevel::new();
+        let (tx, alive) = Self::spawn_audio_thread(shared_level.clone());
         Self {
             cmd_tx: tx,
             thread_alive: alive,
@@ -74,11 +187,14 @@ impl PlayerEngine {
             duration_ms: 0,
             play_start_time: None,
             accumulated_ms: 0,
+            shared_audio_level: shared_level,
         }
     }
 
     /// 启动音频线程，返回 (命令发送端, 存活标记)
-    fn spawn_audio_thread() -> (mpsc::Sender<AudioCmd>, Arc<AtomicBool>) {
+    fn spawn_audio_thread(
+        shared_level: Arc<Mutex<SharedAudioLevel>>,
+    ) -> (mpsc::Sender<AudioCmd>, Arc<AtomicBool>) {
         let (tx, rx) = mpsc::channel::<AudioCmd>();
         let alive = Arc::new(AtomicBool::new(true));
         let alive_flag = alive.clone();
@@ -87,7 +203,7 @@ impl PlayerEngine {
             .name("audio-engine".into())
             .spawn(move || {
                 if let Err(e) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    Self::audio_thread(rx);
+                    Self::audio_thread(rx, shared_level);
                 })) {
                     eprintln!("[audio-thread] PANIC: {:?}", e);
                 }
@@ -103,7 +219,7 @@ impl PlayerEngine {
     fn ensure_alive(&mut self) {
         if !self.thread_alive.load(Ordering::SeqCst) {
             eprintln!("[PlayerEngine] audio thread dead, respawning...");
-            let (tx, alive) = Self::spawn_audio_thread();
+            let (tx, alive) = Self::spawn_audio_thread(self.shared_audio_level.clone());
             self.cmd_tx = tx;
             self.thread_alive = alive;
             let _ = self.cmd_tx.send(AudioCmd::SetVolume(self.volume));
@@ -140,7 +256,7 @@ impl PlayerEngine {
     }
 
     /// 音频线程主循环
-    fn audio_thread(rx: mpsc::Receiver<AudioCmd>) {
+    fn audio_thread(rx: mpsc::Receiver<AudioCmd>, shared_level: Arc<Mutex<SharedAudioLevel>>) {
         let mut stream: Option<OutputStream> = None;
         let mut handle: Option<rodio::OutputStreamHandle> = None;
         let mut current_sink: Option<Sink> = None;
@@ -196,11 +312,14 @@ impl PlayerEngine {
 
                         eprintln!("[audio-thread] decoded ok, duration={}ms", duration_ms);
 
+                        // 包装为 AnalyzingSource
+                        let analyzing = AnalyzingSource::new(dec, shared_level.clone());
+
                         let sink = Sink::try_new(h)
                             .map_err(|e| format!("Sink error: {}", e))?;
                         sink.set_volume(current_volume);
                         sink.set_speed(current_speed);
-                        sink.append(dec);
+                        sink.append(analyzing);
 
                         current_sink = Some(sink);
                         current_source = Some(source);
@@ -223,11 +342,14 @@ impl PlayerEngine {
                         let source = AudioSource::File(path);
                         let (dec, dur) = Self::make_decoder(&source)?;
 
+                        // 包装为 AnalyzingSource
+                        let analyzing = AnalyzingSource::new(dec, shared_level.clone());
+
                         let sink = Sink::try_new(h)
                             .map_err(|e| format!("Sink error: {}", e))?;
                         sink.set_volume(current_volume);
                         sink.set_speed(current_speed);
-                        sink.append(dec);
+                        sink.append(analyzing);
 
                         current_sink = Some(sink);
                         current_source = Some(source);
@@ -255,6 +377,8 @@ impl PlayerEngine {
                     }
                     current_source = None;
                     current_duration_ms = 0;
+                    // 重置共享电平
+                    SharedAudioLevel::reset(&shared_level);
                 }
 
                 AudioCmd::SetVolume(vol) => {
@@ -275,18 +399,16 @@ impl PlayerEngine {
                     let result = (|| -> Result<(), String> {
                         eprintln!("[audio-thread] Seek to {}ms", position_ms);
 
-                        // File 来源尝试 rodio 原生 seek（symphonia 对文件 seek 支持良好）
-                        let is_file = matches!(current_source.as_ref(), Some(AudioSource::File(_)));
-                        if is_file {
-                            if let Some(ref sink) = current_sink {
-                                if sink.try_seek(Duration::from_millis(position_ms)).is_ok() {
-                                    eprintln!("[audio-thread] Native seek OK");
-                                    return Ok(());
-                                }
+                        // 所有来源先尝试原生 seek（symphonia 对 File 和 Cursor<Vec<u8>> 都支持）
+                        if let Some(ref sink) = current_sink {
+                            if sink.try_seek(Duration::from_millis(position_ms)).is_ok() {
+                                eprintln!("[audio-thread] Native seek OK");
+                                return Ok(());
                             }
+                            eprintln!("[audio-thread] Native seek failed, falling back to rebuild");
                         }
 
-                        // Bytes 来源或原生 seek 失败——重建 decoder + skip samples
+                        // 原生 seek 失败——重建 decoder + skip samples（最后手段）
                         let source = current_source.as_ref()
                             .ok_or_else(|| "Nothing is playing".to_string())?;
                         let h = handle.as_ref()
@@ -301,11 +423,14 @@ impl PlayerEngine {
                         let skip_duration = Duration::from_millis(position_ms);
                         let skipped = dec.skip_duration(skip_duration);
 
+                        // 包装为 AnalyzingSource
+                        let analyzing = AnalyzingSource::new(skipped, shared_level.clone());
+
                         let sink = Sink::try_new(h)
                             .map_err(|e| format!("Sink error: {}", e))?;
                         sink.set_volume(current_volume);
                         sink.set_speed(current_speed);
-                        sink.append(skipped);
+                        sink.append(analyzing);
                         if was_paused {
                             sink.pause();
                         }

@@ -22,7 +22,7 @@ const hoverRatio = ref(0)
 const hoverX = ref(0) // tooltip 的绝对 X 位置（相对于 progress-track）
 
 const displayProgress = computed(() =>
-  isDraggingProgress.value ? dragRatio.value : player.progress
+  isDraggingProgress.value ? dragRatio.value : player.interpolatedProgress
 )
 
 /** 悬浮位置对应的时间（ms） */
@@ -245,7 +245,7 @@ const volumeIcon = computed(() => {
   height: 100%;
   background: var(--md-primary);
   border-radius: 0 2px 2px 0;
-  transition: width 200ms linear;
+  transition: none; /* rAF 逐帧更新，不需要 CSS transition */
   position: relative;
 
   // 拖拽时取消 width transition，消除延迟感

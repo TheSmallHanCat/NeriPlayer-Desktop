@@ -185,7 +185,21 @@
     "info_applied": "Song info applied",
     "info_restored": "Original info restored",
     "quality_changing": "Switching quality...",
-    "not_available": "Not available for this source"
+    "not_available": "Not available for this source",
+    "source_netease": "NetEase",
+    "source_bilibili": "Bilibili",
+    "source_youtube": "YouTube",
+    "source_local": "Local",
+    "lyrics_editor": "Lyrics Editor",
+    "lyrics_editor_placeholder": "[00:00.00] Paste LRC lyrics here...",
+    "lyrics_apply": "Apply Lyrics",
+    "lyrics_applied": "Lyrics applied",
+    "lyrics_clear": "Clear Lyrics",
+    "lyrics_cleared": "Lyrics cleared",
+    "lyrics_fill": "Fill Lyrics",
+    "lyrics_fill_desc": "Search and fill lyrics",
+    "lyrics_fill_applied": "Lyrics filled",
+    "pitch": "Pitch"
   },
   "recent": {
     "title": "Recent",

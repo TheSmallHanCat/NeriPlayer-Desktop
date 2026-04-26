@@ -56,6 +56,15 @@ export interface LyricLine {
 
 export type RepeatMode = 'off' | 'all' | 'one'
 
+// ─── 播放位置插值状态（模块级，rAF 驱动） ───
+let _interpAnchorMs = 0         // 上次后端报告的位置
+let _interpAnchorTime = 0       // 对应的 performance.now() 锚点
+let _interpRenderedMs = 0       // 上次渲染的插值位置
+let _interpSpeed = 1.0          // 当前播放速度快照
+let _interpIsPlaying = false    // 当前播放状态快照
+let _interpDurationMs = 0       // 当前时长快照
+let _interpLoopStarted = false  // rAF 循环是否已启动
+
 export const usePlayerStore = defineStore('player', () => {
   const isPlaying = ref(false)
   const currentTrack = ref<TrackInfo | null>(null)
@@ -130,6 +139,12 @@ export const usePlayerStore = defineStore('player', () => {
   const audioLevel = ref(0)
   const beatImpulse = ref(0)
 
+  // 插值后的播放位置（rAF 驱动，60fps 平滑）
+  const interpolatedPositionMs = ref(0)
+  const interpolatedProgress = computed(() =>
+    durationMs.value > 0 ? interpolatedPositionMs.value / durationMs.value : 0
+  )
+
   const progress = computed(() =>
     durationMs.value > 0 ? positionMs.value / durationMs.value : 0
   )
@@ -145,9 +160,51 @@ export const usePlayerStore = defineStore('player', () => {
   // seek 后第一次接受 position 事件时的目标位置，用于检测偏差过大的旧事件
   let seekTargetMs: number | null = null
 
+  /** 启动 rAF 插值循环（仅调用一次） */
+  function _startInterpolationLoop() {
+    if (_interpLoopStarted) return
+    _interpLoopStarted = true
+
+    function tick() {
+      requestAnimationFrame(tick)
+
+      if (!_interpIsPlaying) {
+        // 非播放时直接使用后端值
+        interpolatedPositionMs.value = positionMs.value
+        return
+      }
+
+      const now = performance.now()
+      const elapsed = (now - _interpAnchorTime) * _interpSpeed
+      const predicted = _interpAnchorMs + elapsed
+      const clamped = Math.max(0, Math.min(predicted, _interpDurationMs))
+
+      // 向后容忍 24ms（防抖动：后端偶尔报告比预测稍早的位置）
+      if (clamped < _interpRenderedMs - 24) {
+        // 后端回退过多，snap
+        _interpRenderedMs = clamped
+      } else {
+        _interpRenderedMs = Math.max(_interpRenderedMs, clamped)
+      }
+
+      // Snap 阈值：与后端差距超过 220ms 直接跳转
+      const backendPos = positionMs.value
+      if (Math.abs(_interpRenderedMs - backendPos) > 220) {
+        _interpRenderedMs = backendPos
+        _interpAnchorMs = backendPos
+        _interpAnchorTime = now
+      }
+
+      interpolatedPositionMs.value = Math.round(_interpRenderedMs)
+    }
+
+    requestAnimationFrame(tick)
+  }
+
   function initEvents() {
     if (eventsInitialized) return
     eventsInitialized = true
+    _startInterpolationLoop()
 
     // 监听后端播放位置更新
     listen<{ positionMs: number; durationMs: number }>('player:position', (e) => {
@@ -161,6 +218,11 @@ export const usePlayerStore = defineStore('player', () => {
       }
       positionMs.value = e.payload.positionMs
       durationMs.value = e.payload.durationMs
+
+      // 更新插值锚点
+      _interpAnchorMs = e.payload.positionMs
+      _interpAnchorTime = performance.now()
+      _interpDurationMs = e.payload.durationMs
     })
 
     // 监听音频电平
@@ -246,6 +308,15 @@ export const usePlayerStore = defineStore('player', () => {
       isLoadingAudio.value = false
       positionMs.value = 0
 
+      // 重置插值状态
+      _interpAnchorMs = 0
+      _interpAnchorTime = performance.now()
+      _interpRenderedMs = 0
+      _interpSpeed = playbackSpeed.value
+      _interpIsPlaying = true
+      _interpDurationMs = durationMs.value
+      interpolatedPositionMs.value = 0
+
       // 记录播放历史
       const history = useHistoryStore()
       history.record(track)
@@ -262,21 +333,27 @@ export const usePlayerStore = defineStore('player', () => {
   }
 
   async function togglePlayPause() {
+    // 乐观更新：立即翻转 UI 状态，消除 IPC 延迟感
+    const optimistic = !isPlaying.value
+    isPlaying.value = optimistic
+    _interpIsPlaying = optimistic
+    if (optimistic) {
+      _interpAnchorMs = positionMs.value
+      _interpAnchorTime = performance.now()
+      _interpRenderedMs = positionMs.value
+      _interpSpeed = playbackSpeed.value
+    }
+
     try {
-      // 先恢复播放（不阻塞在 seek 上）
       const playing = await invoke<boolean>('toggle_play_pause')
-      isPlaying.value = playing
-      // 恢复播放后，如果有 pending seek 位置，立即重新 seek（fire-and-forget）
-      if (playing && lastSeekedMs !== null) {
-        const pos = lastSeekedMs
+      // 后端确认：如果与乐观预测不一致则修正
+      if (playing !== optimistic) {
+        isPlaying.value = playing
+        _interpIsPlaying = playing
+      }
+      // 清除 pending seek 标记（seekTo 已经 fire-and-forget 发送过了）
+      if (playing) {
         lastSeekedMs = null
-        seekTargetMs = pos
-        // 延长 guard 保护 seek 期间不被旧位置覆盖
-        seekGuardUntil = Date.now() + 2000
-        invoke('seek', { positionMs: pos }).then(() => {
-          positionMs.value = pos
-          seekGuardUntil = Date.now() + 800
-        }).catch(() => {})
       }
     } catch {
       isPlaying.value = !isPlaying.value
@@ -284,13 +361,21 @@ export const usePlayerStore = defineStore('player', () => {
   }
 
   async function pause() {
-    try { await invoke('pause') } catch {}
+    // 乐观更新
     isPlaying.value = false
+    _interpIsPlaying = false
+    try { await invoke('pause') } catch {}
   }
 
   async function resume() {
-    try { await invoke('resume') } catch {}
+    // 乐观更新
     isPlaying.value = true
+    _interpAnchorMs = positionMs.value
+    _interpAnchorTime = performance.now()
+    _interpRenderedMs = positionMs.value
+    _interpIsPlaying = true
+    _interpSpeed = playbackSpeed.value
+    try { await invoke('resume') } catch {}
   }
 
   async function seekTo(ms: number) {
@@ -299,13 +384,20 @@ export const usePlayerStore = defineStore('player', () => {
     lastSeekedMs = posMs
     seekTargetMs = posMs
     seekGuardUntil = Date.now() + 1500
-    try {
-      await invoke('seek', { positionMs: posMs })
+
+    // 立即重置插值到 seek 目标（乐观更新，用户立即看到跳转）
+    _interpAnchorMs = posMs
+    _interpAnchorTime = performance.now()
+    _interpRenderedMs = posMs
+    interpolatedPositionMs.value = posMs
+
+    // Fire-and-forget：不阻塞 UI，后端异步执行 seek
+    invoke('seek', { positionMs: posMs }).then(() => {
       positionMs.value = posMs
       seekGuardUntil = Date.now() + 800
-    } catch (e) {
+    }).catch((e) => {
       console.error('Seek failed:', e)
-    }
+    })
   }
 
   /**
@@ -470,6 +562,13 @@ export const usePlayerStore = defineStore('player', () => {
   const playbackSpeed = ref(1.0)
   async function setSpeed(spd: number) {
     playbackSpeed.value = spd
+    _interpSpeed = spd
+    // 重新锚定以反映速度变化
+    if (_interpIsPlaying) {
+      _interpAnchorMs = interpolatedPositionMs.value
+      _interpAnchorTime = performance.now()
+      _interpRenderedMs = interpolatedPositionMs.value
+    }
     try { await invoke('set_speed', { speed: spd }) } catch {}
   }
 
@@ -579,7 +678,8 @@ export const usePlayerStore = defineStore('player', () => {
     repeatMode, shuffleEnabled, volume, lyrics, playError, isLoadingAudio,
     audioLevel, beatImpulse, audioInfo,
     playbackSpeed, sleepTimerMode, sleepRemainingSeconds,
-    progress, currentTimeFormatted, durationFormatted,
+    progress, interpolatedPositionMs, interpolatedProgress,
+    currentTimeFormatted, durationFormatted,
     play, togglePlayPause, pause, resume, seekTo, next, previous,
     toggleRepeatMode, toggleShuffle, cyclePlayMode, playMode, setVolume, setSpeed,
     startSleepTimer, startSleepTimerEndOfTrack, startSleepTimerEndOfQueue, cancelSleepTimer,

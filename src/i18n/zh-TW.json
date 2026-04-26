@@ -185,7 +185,21 @@
     "info_applied": "已套用歌曲資訊",
     "info_restored": "已還原原始資訊",
     "quality_changing": "正在切換音質...",
-    "not_available": "此來源不支援"
+    "not_available": "此來源不支援",
+    "source_netease": "網易雲",
+    "source_bilibili": "嗶哩嗶哩",
+    "source_youtube": "YouTube",
+    "source_local": "本地",
+    "lyrics_editor": "歌詞編輯器",
+    "lyrics_editor_placeholder": "[00:00.00] 在此貼上 LRC 歌詞...",
+    "lyrics_apply": "套用歌詞",
+    "lyrics_applied": "歌詞已套用",
+    "lyrics_clear": "清除歌詞",
+    "lyrics_cleared": "歌詞已清除",
+    "lyrics_fill": "歌詞填充",
+    "lyrics_fill_desc": "搜尋並填充歌詞",
+    "lyrics_fill_applied": "歌詞已填充",
+    "pitch": "音調"
   },
   "recent": {
     "title": "最近播放",

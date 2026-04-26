@@ -98,7 +98,7 @@ function scrollToActive(idx: number, behavior: ScrollBehavior = 'smooth') {
     const lineEls = containerRef.value!.querySelectorAll('.lyric-line')
     const el = lineEls[idx] as HTMLElement
     if (!el) { isAutoScrolling = false; return }
-    const target = el.offsetTop - containerRef.value!.clientHeight * 0.30
+    const target = el.offsetTop - containerRef.value!.clientHeight * 0.40
     containerRef.value!.scrollTo({ top: target, behavior })
     setTimeout(() => { isAutoScrolling = false }, behavior === 'instant' ? 50 : 500)
   })
@@ -211,11 +211,11 @@ function tiltForLine(index: number): string {
 }
 
 function tiltOriginForLine(index: number): string {
-  if (activeIndex.value < 0) return 'left center'
+  if (activeIndex.value < 0) return 'center center'
   const sd = signedDist(index)
-  if (sd < 0) return 'left bottom'   // 上方行以底边为轴
-  if (sd > 0) return 'left top'      // 下方行以顶边为轴
-  return 'left center'
+  if (sd < 0) return 'center bottom'   // 上方行以底边为轴
+  if (sd > 0) return 'center top'      // 下方行以顶边为轴
+  return 'center center'
 }
 
 // --- 径向辉光跟踪（跟随 karaoke 进度） ---
@@ -295,21 +295,22 @@ function seekToLine(line: LyricLine) {
   height: 100%;
   overflow-y: auto;
   overflow-x: hidden;
-  padding: 0 24px;
+  padding: 0 16px;
   mask-image: linear-gradient(to bottom, transparent 0%, black 20px, black calc(100% - 100px), transparent 100%);
   -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 20px, black calc(100% - 100px), transparent 100%);
   perspective: 800px;
+  text-align: center;
   &::-webkit-scrollbar { display: none; }
   scrollbar-width: none;
 }
 
-.lyrics-pad-top { height: 30%; }
+.lyrics-pad-top { height: 42%; }
 .lyrics-pad-bottom { height: 50%; }
 
 .lyric-line {
   position: relative;
   padding: 8px 16px;
-  transform-origin: var(--tilt-origin, left center);
+  transform-origin: var(--tilt-origin, center center);
   transform: scale(var(--scale, 1)) var(--tilt, rotateX(0));
   opacity: var(--alpha, 1);
   filter: blur(var(--blur, 0px));
@@ -326,7 +327,7 @@ function seekToLine(line: LyricLine) {
   }
   &.active {
     filter: none;
-    transform-origin: left center;
+    transform-origin: center center;
   }
   &.clear-text {
     transform: none;

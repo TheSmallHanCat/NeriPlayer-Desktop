@@ -34,6 +34,118 @@ const showSpeedMenu = ref(false)
 const showSleepMenu = ref(false)
 const showMoreSheet = ref(false)
 
+// --- 来源徽章（对齐 Android PlaybackSourceBadge） ---
+const playbackSourceLabel = computed(() => {
+  const id = player.currentTrack?.id || ''
+  if (id.startsWith('netease:')) return t('player.source_netease')
+  if (id.startsWith('bilibili:')) return t('player.source_bilibili')
+  if (id.startsWith('youtube:')) return t('player.source_youtube')
+  if (id.startsWith('local:') || player.currentTrack?.audioUrl?.startsWith('file:')) return t('player.source_local')
+  return ''
+})
+const playbackSourceIcon = computed(() => {
+  const id = player.currentTrack?.id || ''
+  if (id.startsWith('netease:')) return 'cloud'
+  if (id.startsWith('bilibili:')) return 'smart_display'
+  if (id.startsWith('youtube:')) return 'play_circle'
+  return 'folder'
+})
+const showSourceBadge = computed(() => settings.showCoverBadge && playbackSourceLabel.value !== '')
+
+// --- 歌词编辑器 ---
+const lyricsEditorText = ref('')
+
+function openLyricsEditor() {
+  // 将当前歌词还原为 LRC 文本
+  const lines = displayLyrics.value
+  if (lines.length > 0) {
+    lyricsEditorText.value = lines.map(l => {
+      const min = Math.floor(l.startMs / 60000)
+      const sec = Math.floor((l.startMs % 60000) / 1000)
+      const ms = Math.floor((l.startMs % 1000) / 10)
+      return `[${String(min).padStart(2, '0')}:${String(sec).padStart(2, '0')}.${String(ms).padStart(2, '0')}]${l.text}`
+    }).join('\n')
+  } else {
+    lyricsEditorText.value = ''
+  }
+  moreSheetView.value = 'lyrics-editor'
+}
+
+async function applyLyricsFromEditor() {
+  const text = lyricsEditorText.value.trim()
+  if (!text) {
+    // 清除歌词
+    fetchedLyrics.value = []
+    toast.success(t('player.lyrics_cleared'))
+    moreSheetView.value = 'main'
+    return
+  }
+  try {
+    const parsed = await invoke<any[]>('parse_lrc_content', { content: text })
+    fetchedLyrics.value = parsed.map(l => ({
+      startMs: l.start_ms,
+      durationMs: l.duration_ms,
+      words: (l.words || []).map((w: any) => ({
+        startMs: w.start_ms, durationMs: w.duration_ms, text: w.text,
+      })),
+      text: l.text,
+      translation: l.translation || undefined,
+    }))
+    toast.success(t('player.lyrics_applied'))
+  } catch (e) {
+    console.error('Parse LRC failed:', e)
+    toast.error(String(e))
+  }
+  moreSheetView.value = 'main'
+}
+
+// --- 歌词填充（搜索 + 应用歌词） ---
+const lyricFillQuery = ref('')
+const lyricFillResults = ref<any[]>([])
+const isLyricFilling = ref(false)
+
+async function doLyricFillSearch() {
+  const q = lyricFillQuery.value.trim()
+  if (!q) return
+  isLyricFilling.value = true
+  lyricFillResults.value = []
+  try {
+    const results = await invoke<any[]>('search', { query: q, platform: 'netease' })
+    lyricFillResults.value = results
+  } catch (e) {
+    console.error('Lyric fill search failed:', e)
+  } finally {
+    isLyricFilling.value = false
+  }
+}
+
+async function applyLyricFill(result: any) {
+  try {
+    const neteaseId = result.id ? parseInt(String(result.id)) : null
+    const lyrics = await invoke<any[]>('fetch_lyrics', {
+      title: result.title || '',
+      artist: result.artist || '',
+      durationSecs: Math.floor((result.duration_ms || 0) / 1000),
+      audioPath: null,
+      neteaseId: neteaseId,
+    })
+    fetchedLyrics.value = lyrics.map(l => ({
+      startMs: l.start_ms,
+      durationMs: l.duration_ms,
+      words: (l.words || []).map((w: any) => ({
+        startMs: w.start_ms, durationMs: w.duration_ms, text: w.text,
+      })),
+      text: l.text,
+      translation: l.translation || undefined,
+    }))
+    toast.success(t('player.lyrics_fill_applied'))
+    moreSheetView.value = 'main'
+  } catch (e) {
+    console.error('Lyric fill failed:', e)
+    toast.error(String(e))
+  }
+}
+
 // 供顶栏调用
 defineExpose({
   toggleMore() { showMoreSheet.value = !showMoreSheet.value },
@@ -368,7 +480,7 @@ const displayLyrics = computed(() => {
 })
 
 // 更多选项面板子视图
-const moreSheetView = ref<'main' | 'offset' | 'fontsize' | 'speed' | 'search' | 'editinfo' | 'quality'>('main')
+const moreSheetView = ref<'main' | 'offset' | 'fontsize' | 'speed' | 'search' | 'editinfo' | 'quality' | 'lyrics-editor' | 'lyrics-fill'>('main')
 
 // 关闭更多选项面板时重置子视图
 watch(showMoreSheet, (v) => { if (!v) moreSheetView.value = 'main' })
@@ -635,6 +747,15 @@ const sliderActiveColor = computed(() => {
         <span class="np-from-label">{{ t('player.now_playing') }}</span>
         <span class="np-from-name">{{ displayAlbum(player.currentTrack?.album || '') }}</span>
       </div>
+      <!-- 收藏 + 更多（对齐 Android 顶栏右侧） -->
+      <button
+        class="np-icon-btn fav-header-btn"
+        :class="{ active: isFavorite }"
+        :disabled="!player.currentTrack"
+        @click="toggleFavorite"
+      >
+        <span class="material-symbols-rounded" :class="{ filled: isFavorite }">favorite</span>
+      </button>
       <button class="np-icon-btn" @click="showMoreSheet = !showMoreSheet">
         <span class="material-symbols-rounded">more_vert</span>
       </button>
@@ -671,6 +792,11 @@ const sliderActiveColor = computed(() => {
             <div class="cover-groove" />
             <div class="cover-hole" />
           </div>
+          <!-- 来源徽章（对齐 Android PlaybackSourceBadge） -->
+          <div v-if="showSourceBadge && settings.coverStyle === 'card'" class="source-badge">
+            <span class="material-symbols-rounded source-badge-icon">{{ playbackSourceIcon }}</span>
+            <span class="source-badge-label">{{ playbackSourceLabel }}</span>
+          </div>
         </div>
 
         <div class="np-info">
@@ -680,7 +806,7 @@ const sliderActiveColor = computed(() => {
 
         <div class="np-slider-area">
           <WaveformSlider
-            :progress="player.progress"
+            :progress="player.interpolatedProgress"
             :is-playing="player.isPlaying"
             :active-color="sliderActiveColor"
             @seek="onSeek"
@@ -701,10 +827,10 @@ const sliderActiveColor = computed(() => {
         <div class="np-controls">
           <button
             class="ctrl-btn"
-            :class="{ active: player.repeatMode !== 'off' }"
-            @click="player.toggleRepeatMode()"
+            :class="{ active: player.shuffleEnabled }"
+            @click="player.toggleShuffle()"
           >
-            <span class="material-symbols-rounded">{{ player.repeatMode === 'one' ? 'repeat_one' : 'repeat' }}</span>
+            <span class="material-symbols-rounded">shuffle</span>
           </button>
 
           <button class="ctrl-btn" @click="player.previous()">
@@ -713,7 +839,7 @@ const sliderActiveColor = computed(() => {
 
           <!-- 播放/暂停 带动画 -->
           <button class="play-btn" @click="player.togglePlayPause()" :disabled="player.isLoadingAudio">
-            <transition name="play-icon" mode="out-in">
+            <transition name="play-icon">
               <span
                 v-if="player.isLoadingAudio"
                 class="material-symbols-rounded spinning play-icon-inner"
@@ -733,63 +859,18 @@ const sliderActiveColor = computed(() => {
 
           <button
             class="ctrl-btn"
-            :class="{ active: player.shuffleEnabled }"
-            @click="player.toggleShuffle()"
+            :class="{ active: player.repeatMode !== 'off' }"
+            @click="player.toggleRepeatMode()"
           >
-            <span class="material-symbols-rounded">shuffle</span>
+            <span class="material-symbols-rounded">{{ player.repeatMode === 'one' ? 'repeat_one' : 'repeat' }}</span>
           </button>
         </div>
 
-        <!-- 工具栏 -->
+        <!-- 工具栏（对齐 Android 底部：Queue → Sleep → Volume → Speed → Add） -->
         <div class="np-toolbar">
-          <button
-            class="tool-btn fav-btn"
-            :class="{ active: isFavorite }"
-            :disabled="!player.currentTrack"
-            @click="toggleFavorite"
-          >
-            <span class="material-symbols-rounded" :class="{ filled: isFavorite }">favorite</span>
-          </button>
-          <button class="tool-btn" @click="showAddToPlaylist = true">
-            <span class="material-symbols-rounded">add_circle</span>
-          </button>
           <button class="tool-btn" @click="showQueue = true">
             <span class="material-symbols-rounded">queue_music</span>
           </button>
-          <!-- 播放速度 -->
-          <div class="speed-wrap">
-            <button class="tool-btn" :class="{ active: showSpeedMenu }" @click="showSpeedMenu = !showSpeedMenu">
-              <span class="speed-label">{{ player.playbackSpeed === 1 ? '1x' : player.playbackSpeed + 'x' }}</span>
-            </button>
-            <div v-if="showSpeedMenu" class="speed-popover" @mouseleave="showSpeedMenu = false">
-              <button
-                v-for="spd in [0.5, 0.75, 0.85, 0.9, 1, 1.1, 1.25, 1.5, 2]"
-                :key="spd"
-                class="speed-option"
-                :class="{ active: player.playbackSpeed === spd }"
-                @click="player.setSpeed(spd); showSpeedMenu = false"
-              >
-                {{ spd }}x
-              </button>
-            </div>
-          </div>
-          <div class="volume-wrap">
-            <button class="tool-btn" @click="showVolumeSlider = !showVolumeSlider">
-              <span class="material-symbols-rounded">{{ player.volume === 0 ? 'volume_off' : player.volume < 0.5 ? 'volume_down' : 'volume_up' }}</span>
-            </button>
-            <div v-if="showVolumeSlider" class="volume-popover" @mouseleave="showVolumeSlider = false">
-              <input
-                type="range"
-                min="0"
-                max="1"
-                step="0.01"
-                :value="1 - player.volume"
-                class="volume-slider"
-                @input="player.setVolume(1 - parseFloat(($event.target as HTMLInputElement).value))"
-              />
-              <span class="volume-label">{{ Math.round(player.volume * 100) }}%</span>
-            </div>
-          </div>
           <!-- 睡眠定时器 -->
           <div class="sleep-wrap">
             <button
@@ -820,6 +901,43 @@ const sliderActiveColor = computed(() => {
               </button>
             </div>
           </div>
+          <div class="volume-wrap">
+            <button class="tool-btn" @click="showVolumeSlider = !showVolumeSlider">
+              <span class="material-symbols-rounded">{{ player.volume === 0 ? 'volume_off' : player.volume < 0.5 ? 'volume_down' : 'volume_up' }}</span>
+            </button>
+            <div v-if="showVolumeSlider" class="volume-popover" @mouseleave="showVolumeSlider = false">
+              <input
+                type="range"
+                min="0"
+                max="1"
+                step="0.01"
+                :value="1 - player.volume"
+                class="volume-slider"
+                @input="player.setVolume(1 - parseFloat(($event.target as HTMLInputElement).value))"
+              />
+              <span class="volume-label">{{ Math.round(player.volume * 100) }}%</span>
+            </div>
+          </div>
+          <!-- 播放速度 -->
+          <div class="speed-wrap">
+            <button class="tool-btn" :class="{ active: showSpeedMenu }" @click="showSpeedMenu = !showSpeedMenu">
+              <span class="speed-label">{{ player.playbackSpeed === 1 ? '1x' : player.playbackSpeed + 'x' }}</span>
+            </button>
+            <div v-if="showSpeedMenu" class="speed-popover" @mouseleave="showSpeedMenu = false">
+              <button
+                v-for="spd in [0.5, 0.75, 0.85, 0.9, 1, 1.1, 1.25, 1.5, 2]"
+                :key="spd"
+                class="speed-option"
+                :class="{ active: player.playbackSpeed === spd }"
+                @click="player.setSpeed(spd); showSpeedMenu = false"
+              >
+                {{ spd }}x
+              </button>
+            </div>
+          </div>
+          <button class="tool-btn" @click="showAddToPlaylist = true">
+            <span class="material-symbols-rounded">playlist_add</span>
+          </button>
         </div>
       </section>
 
@@ -828,7 +946,7 @@ const sliderActiveColor = computed(() => {
         <LyricsView
           v-if="displayLyrics.length > 0"
           :lyrics="displayLyrics"
-          :current-time-ms="player.positionMs"
+          :current-time-ms="player.interpolatedPositionMs"
           :preview-time-ms="previewPositionMs"
           :is-playing="player.isPlaying"
           @seek="(ms) => player.seekTo(ms)"
@@ -911,6 +1029,25 @@ const sliderActiveColor = computed(() => {
               <span class="material-symbols-rounded np-more-chevron">chevron_right</span>
             </button>
 
+            <!-- 歌词编辑器（对齐 Android LyricsEditorSheet） -->
+            <button class="np-more-list-item" @click="openLyricsEditor">
+              <span class="material-symbols-rounded">edit_note</span>
+              <div class="np-more-list-info">
+                <span class="np-more-list-headline">{{ t('player.lyrics_editor') }}</span>
+              </div>
+              <span class="material-symbols-rounded np-more-chevron">chevron_right</span>
+            </button>
+
+            <!-- 歌词填充（对齐 Android FillOptionsDialog） -->
+            <button class="np-more-list-item" @click="lyricFillQuery = player.currentTrack?.title || ''; lyricFillResults = []; moreSheetView = 'lyrics-fill'">
+              <span class="material-symbols-rounded">lyrics</span>
+              <div class="np-more-list-info">
+                <span class="np-more-list-headline">{{ t('player.lyrics_fill') }}</span>
+                <span class="np-more-list-desc">{{ t('player.lyrics_fill_desc') }}</span>
+              </div>
+              <span class="material-symbols-rounded np-more-chevron">chevron_right</span>
+            </button>
+
             <!-- 分享 -->
             <button class="np-more-list-item" @click="shareSong">
               <span class="material-symbols-rounded">share</span>
@@ -984,22 +1121,45 @@ const sliderActiveColor = computed(() => {
             </div>
           </template>
 
-          <!-- 子视图：播放速度 -->
+          <!-- 子视图：音频效果（对齐 Android PlaybackSoundSheet） -->
           <template v-else-if="moreSheetView === 'speed'">
             <div class="np-more-sub-header">
               <button class="np-more-back" @click="moreSheetView = 'main'">
                 <span class="material-symbols-rounded">arrow_back</span>
               </button>
-              <h4 class="np-more-title">{{ t('player.playback_speed') }}</h4>
+              <h4 class="np-more-title">{{ t('player.audio_effects') }}</h4>
             </div>
-            <div class="np-more-speed-grid">
-              <button
-                v-for="spd in [0.5, 0.75, 0.85, 0.9, 1, 1.1, 1.25, 1.5, 2]"
-                :key="spd"
-                class="np-more-speed-btn"
-                :class="{ active: player.playbackSpeed === spd }"
-                @click="player.setSpeed(spd)"
-              >{{ spd }}x</button>
+            <!-- 播放速度 -->
+            <div class="np-more-item">
+              <div class="np-more-label">
+                <span class="material-symbols-rounded" style="font-size: 18px">speed</span>
+                {{ t('player.playback_speed') }}
+              </div>
+              <div class="np-more-speed-grid">
+                <button
+                  v-for="spd in [0.5, 0.75, 0.85, 0.9, 1, 1.1, 1.25, 1.5, 2]"
+                  :key="spd"
+                  class="np-more-speed-btn"
+                  :class="{ active: player.playbackSpeed === spd }"
+                  @click="player.setSpeed(spd)"
+                >{{ spd }}x</button>
+              </div>
+            </div>
+            <!-- 速度微调滑块 -->
+            <div class="np-more-item">
+              <div class="np-more-row">
+                <input type="range" min="0.25" max="3" step="0.05"
+                  :value="player.playbackSpeed"
+                  class="np-more-slider"
+                  @input="player.setSpeed(parseFloat(($event.target as HTMLInputElement).value))"
+                />
+                <span class="np-offset-value">{{ player.playbackSpeed.toFixed(2) }}x</span>
+              </div>
+            </div>
+            <!-- 音调提示 -->
+            <div class="np-audio-effect-note">
+              <span class="material-symbols-rounded" style="font-size: 16px">info</span>
+              <span>{{ t('player.pitch') }}: {{ player.playbackSpeed !== 1 ? (player.playbackSpeed > 1 ? '↑' : '↓') : '—' }}</span>
             </div>
           </template>
 
@@ -1105,6 +1265,72 @@ const sliderActiveColor = computed(() => {
               </button>
             </div>
             <div v-else class="np-more-status">{{ t('player.not_available') }}</div>
+          </template>
+
+          <!-- 子视图：歌词编辑器（对齐 Android LyricsEditorSheet） -->
+          <template v-else-if="moreSheetView === 'lyrics-editor'">
+            <div class="np-more-sub-header">
+              <button class="np-more-back" @click="moreSheetView = 'main'">
+                <span class="material-symbols-rounded">arrow_back</span>
+              </button>
+              <h4 class="np-more-title">{{ t('player.lyrics_editor') }}</h4>
+            </div>
+            <div class="np-lyrics-editor">
+              <textarea
+                v-model="lyricsEditorText"
+                class="np-lyrics-textarea"
+                :placeholder="t('player.lyrics_editor_placeholder')"
+                spellcheck="false"
+              />
+              <div class="np-more-form-actions">
+                <button class="np-more-form-btn primary" @click="applyLyricsFromEditor">
+                  <span class="material-symbols-rounded">check</span>
+                  {{ t('player.lyrics_apply') }}
+                </button>
+                <button class="np-more-form-btn" @click="lyricsEditorText = ''; applyLyricsFromEditor()">
+                  <span class="material-symbols-rounded">clear_all</span>
+                  {{ t('player.lyrics_clear') }}
+                </button>
+              </div>
+            </div>
+          </template>
+
+          <!-- 子视图：歌词填充（对齐 Android FillOptionsDialog） -->
+          <template v-else-if="moreSheetView === 'lyrics-fill'">
+            <div class="np-more-sub-header">
+              <button class="np-more-back" @click="moreSheetView = 'main'">
+                <span class="material-symbols-rounded">arrow_back</span>
+              </button>
+              <h4 class="np-more-title">{{ t('player.lyrics_fill') }}</h4>
+            </div>
+            <div class="np-more-search-bar">
+              <input
+                v-model="lyricFillQuery"
+                class="np-more-input"
+                :placeholder="t('player.search_song')"
+                @keydown.enter="doLyricFillSearch"
+              />
+              <button class="np-more-search-btn" @click="doLyricFillSearch" :disabled="isLyricFilling">
+                <span class="material-symbols-rounded">search</span>
+              </button>
+            </div>
+            <div v-if="isLyricFilling" class="np-more-status">{{ t('player.searching') }}</div>
+            <div v-else-if="lyricFillResults.length === 0 && lyricFillQuery" class="np-more-status">{{ t('player.no_results') }}</div>
+            <div class="np-more-search-results">
+              <button
+                v-for="(r, ri) in lyricFillResults"
+                :key="ri"
+                class="np-more-search-item"
+                @click="applyLyricFill(r)"
+              >
+                <img v-if="r.cover_url" :src="r.cover_url" class="np-more-search-cover" referrerpolicy="no-referrer" />
+                <div class="np-more-search-info">
+                  <span class="np-more-search-title">{{ r.title }}</span>
+                  <span class="np-more-search-artist">{{ r.artist }}</span>
+                </div>
+                <span class="material-symbols-rounded" style="font-size: 18px; color: rgba(255,255,255,0.3)">lyrics</span>
+              </button>
+            </div>
           </template>
 
         </div>
@@ -1241,16 +1467,12 @@ const sliderActiveColor = computed(() => {
   align-items: center;
   justify-content: center;
   gap: 10px;
-  padding: 0 40px;
+  padding: 0 20px 0 40px;
 }
 
 .np-right {
   flex: 1;
-  border-radius: 20px;
   background: transparent;
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
-  border: none;
   display: flex;
   align-items: stretch;
   overflow: hidden;
@@ -1259,6 +1481,7 @@ const sliderActiveColor = computed(() => {
 
 /* 封面 */
 .cover-wrap {
+  position: relative;
   width: min(60%, 280px);
   aspect-ratio: 1;
   filter: drop-shadow(0 16px 48px rgba(0,0,0,0.5));
@@ -1440,6 +1663,7 @@ const sliderActiveColor = computed(() => {
   margin: 0 4px;
   transition: transform 150ms var(--ease-standard), box-shadow 150ms, background 0.6s ease, color 0.6s ease;
   overflow: hidden;
+  position: relative; /* 绝对定位子元素的容器 */
 
   &:hover { transform: scale(1.05); box-shadow: 0 6px 28px rgba(0,0,0,0.4); }
   &:active { transform: scale(0.94); }
@@ -1448,21 +1672,22 @@ const sliderActiveColor = computed(() => {
 .play-icon-inner {
   font-size: 28px;
   display: block;
+  position: absolute; /* 重叠过渡，避免 out-in 空窗 */
 
   &.spinning {
     animation: np-spin 1s linear infinite;
-    color: inherit; // 继承 .play-btn 的深色文字
+    color: inherit;
   }
 }
 
 @keyframes np-spin { to { transform: rotate(360deg); } }
 
-/* 播放/暂停图标切换动画 */
+/* 播放/暂停图标切换动画（同时进出，绝对定位重叠） */
 .play-icon-enter-active {
-  transition: transform 150ms var(--ease-decelerate), opacity 100ms var(--ease-decelerate);
+  transition: transform 200ms var(--ease-decelerate), opacity 150ms var(--ease-decelerate);
 }
 .play-icon-leave-active {
-  transition: transform 80ms var(--ease-accelerate), opacity 60ms var(--ease-accelerate);
+  transition: transform 120ms var(--ease-accelerate), opacity 80ms var(--ease-accelerate);
 }
 .play-icon-enter-from { transform: scale(0.5); opacity: 0; }
 .play-icon-leave-to { transform: scale(0.5); opacity: 0; }
@@ -1498,6 +1723,46 @@ const sliderActiveColor = computed(() => {
 // 收藏按钮活跃态保持红色（对齐 Android Color.Red.copy(alpha=0.6f)）
 .fav-btn.active {
   color: rgba(239, 83, 80, 0.6) !important;
+}
+
+// 顶栏收藏按钮（对齐 Android 顶栏右侧）
+.fav-header-btn {
+  &.active {
+    color: rgba(239, 83, 80, 0.6) !important;
+  }
+}
+
+/* 来源徽章（对齐 Android PlaybackSourceBadge） */
+.source-badge {
+  position: absolute;
+  bottom: 10px;
+  right: 10px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px 4px 7px;
+  border-radius: 20px;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  animation: badge-in 0.35s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.source-badge-icon {
+  font-size: 14px;
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.source-badge-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.8);
+  letter-spacing: 0.3px;
+}
+
+@keyframes badge-in {
+  from { opacity: 0; transform: scale(0.7); }
+  to { opacity: 1; transform: scale(1); }
 }
 
 /* 音量控制 */
@@ -2035,6 +2300,51 @@ const sliderActiveColor = computed(() => {
   display: flex;
   flex-direction: column;
   gap: 2px;
+}
+
+// 歌词编辑器
+.np-lyrics-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.np-lyrics-textarea {
+  width: 100%;
+  min-height: 200px;
+  max-height: 320px;
+  padding: 12px 14px;
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 12px;
+  background: rgba(255,255,255,0.04);
+  color: rgba(255,255,255,0.85);
+  font-size: 13px;
+  font-family: 'Cascadia Code', 'JetBrains Mono', 'Fira Code', monospace;
+  line-height: 1.6;
+  resize: vertical;
+  outline: none;
+  transition: border-color 0.15s;
+
+  &:focus { border-color: rgba(255,255,255,0.3); }
+  &::placeholder { color: rgba(255,255,255,0.2); }
+  &::-webkit-scrollbar { width: 4px; }
+  &::-webkit-scrollbar-thumb {
+    background: rgba(255,255,255,0.12);
+    border-radius: 2px;
+  }
+}
+
+// 音频效果提示
+.np-audio-effect-note {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(255,255,255,0.04);
+  color: rgba(255,255,255,0.35);
+  font-size: 12px;
+  font-weight: 500;
 }
 
 .np-more-quality-item {
