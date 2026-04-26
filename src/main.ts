@@ -22,6 +22,7 @@ const router = createRouter({
     { path: '/playlist/bilibili/:mediaId', name: 'bili-playlist', component: () => import('./views/BiliPlaylistView.vue') },
     { path: '/playlist/youtube/:browseId', name: 'youtube-playlist', component: () => import('./views/YouTubePlaylistView.vue') },
     { path: '/playlist/local/:id', name: 'local-playlist', component: () => import('./views/LocalPlaylistView.vue') },
+    { path: '/debug', name: 'debug', component: () => import('./views/DebugView.vue') },
   ],
 })
 

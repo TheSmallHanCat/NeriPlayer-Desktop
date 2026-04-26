@@ -27,7 +27,7 @@ pub async fn get_netease_song_url(
     quality: String,
     state: State<'_, AppState>,
 ) -> AppResult<SongUrlResult> {
-    let client = NeteaseClient::new(&state.http);
+    let client = NeteaseClient::new(&state.http());
     let result = client.get_song_url(song_id, &quality).await?;
     Ok(SongUrlResult {
         url: result.url,
@@ -51,7 +51,7 @@ pub async fn get_bili_audio_url(
     cid: Option<u64>,
     state: State<'_, AppState>,
 ) -> AppResult<BiliAudioResult> {
-    let client = BiliClient::new(&state.http);
+    let client = BiliClient::new(&state.http());
 
     // 确定 bvid 和 cid
     let (real_bvid, real_cid) = if let Some(aid) = avid {
@@ -89,7 +89,7 @@ pub async fn get_youtube_audio_url(
     video_id: String,
     state: State<'_, AppState>,
 ) -> AppResult<Vec<YtAudioResult>> {
-    let client = YouTubeClient::new(&state.http);
+    let client = YouTubeClient::new(&state.http());
     let streams = client.get_streams(&video_id).await?;
     Ok(streams.into_iter().map(|s| YtAudioResult {
         url: s.url,
@@ -103,4 +103,32 @@ pub async fn get_youtube_audio_url(
 #[tauri::command]
 pub async fn save_file_bytes(path: String, data: Vec<u8>) -> AppResult<()> {
     std::fs::write(&path, &data).map_err(|e| AppError::Other(e.to_string()))
+}
+
+/// 设置绕过代理（前端保存设置后通知后端重建 HTTP Client）
+#[tauri::command]
+pub async fn set_bypass_proxy(
+    bypass: bool,
+    state: State<'_, AppState>,
+) -> AppResult<()> {
+    state.rebuild_http(bypass);
+    Ok(())
+}
+
+/// 获取构建信息
+#[derive(Serialize)]
+pub struct BuildInfo {
+    pub build_uuid: String,
+    pub build_timestamp: String,
+    pub version: String,
+}
+
+#[tauri::command]
+pub async fn get_build_info(app: tauri::AppHandle) -> AppResult<BuildInfo> {
+    let version = app.package_info().version.to_string();
+    Ok(BuildInfo {
+        build_uuid: env!("BUILD_UUID").to_string(),
+        build_timestamp: env!("BUILD_TIMESTAMP").to_string(),
+        version,
+    })
 }

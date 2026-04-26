@@ -3,7 +3,9 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { usePlayerStore, displayAlbum } from '@/stores/player'
 import { useSyncStore } from '@/stores/sync'
 import { useAuthStore } from '@/stores/auth'
+import { useSettingsStore } from '@/stores/settings'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { convertFileSrc } from '@tauri-apps/api/core'
 import MiniPlayer from '@/components/MiniPlayer.vue'
 import NowPlaying from '@/components/NowPlaying.vue'
 import SideNav from '@/components/SideNav.vue'
@@ -11,10 +13,23 @@ import AppToast from '@/components/AppToast.vue'
 import TitleBar from '@/components/TitleBar.vue'
 
 const player = usePlayerStore()
+const settingsStore = useSettingsStore()
 const isNowPlayingOpen = ref(false)
 const nowPlayingRef = ref<InstanceType<typeof NowPlaying> | null>(null)
 
 const hasMiniPlayer = computed(() => !!player.currentTrack)
+
+// 背景图片
+const bgImageStyle = computed(() => {
+  const uri = settingsStore.backgroundImageUri
+  if (!uri) return null
+  const src = uri.startsWith('http') ? uri : convertFileSrc(uri)
+  return {
+    backgroundImage: `url("${src}")`,
+    filter: `blur(${settingsStore.backgroundImageBlur}px)`,
+    opacity: settingsStore.backgroundImageAlpha,
+  }
+})
 
 // 防抖自动同步（歌单变更后 30s 触发，批量合并快速操作）
 const DEBOUNCE_SYNC_MS = 30_000
@@ -69,6 +84,8 @@ onUnmounted(() => {
 
 <template>
   <div class="app-layout">
+    <!-- 自定义背景图 -->
+    <div v-if="bgImageStyle" class="app-bg-image" :style="bgImageStyle"></div>
     <SideNav />
     <main class="content" :class="{ 'has-mini-player': hasMiniPlayer }">
       <router-view v-slot="{ Component, route }">
@@ -120,6 +137,18 @@ onUnmounted(() => {
   overflow: hidden;
   position: relative;
   padding-top: 36px; /* 让出顶栏高度 */
+}
+
+.app-bg-image {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  pointer-events: none;
+  /* scale slightly to hide blur edges */
+  transform: scale(1.1);
 }
 
 .content {
