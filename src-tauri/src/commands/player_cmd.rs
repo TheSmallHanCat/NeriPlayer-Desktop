@@ -114,6 +114,24 @@ pub async fn set_speed(speed: f32, state: State<'_, AppState>) -> AppResult<()> 
 }
 
 #[tauri::command]
+pub async fn set_loudness_gain(gain_mb: i32, state: State<'_, AppState>) -> AppResult<()> {
+    state.player.lock().set_loudness_gain(gain_mb);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn set_equalizer(enabled: bool, band_levels_mb: Vec<i32>, state: State<'_, AppState>) -> AppResult<()> {
+    state.player.lock().set_equalizer(enabled, &band_levels_mb);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn reset_audio_effects(state: State<'_, AppState>) -> AppResult<()> {
+    state.player.lock().reset_effects();
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn get_player_state(state: State<'_, AppState>) -> AppResult<PlayerStateDto> {
     let player = state.player.lock();
     let queue = state.queue.lock();

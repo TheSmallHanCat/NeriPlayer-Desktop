@@ -11,6 +11,7 @@ use rodio::{Decoder, OutputStream, Sink, Source};
 use rodio::source::SeekError;
 
 use crate::audio::analyzer::{AudioAnalyzer, SharedAudioLevel};
+use crate::audio::effects::{AudioEffectsParams, EqualizerSource, LoudnessSource};
 use crate::error::{AppError, AppResult};
 
 /// 播放操作 recv 超时（网络音频解码可能慢）
@@ -169,6 +170,8 @@ pub struct PlayerEngine {
     accumulated_ms: u64,
     /// 共享音频电平数据，供 main.rs ticker 线程读取
     pub shared_audio_level: Arc<Mutex<SharedAudioLevel>>,
+    /// 共享音效参数（响度增益 + 均衡器），音频线程实时读取
+    pub effects_params: Arc<std::sync::Mutex<AudioEffectsParams>>,
 }
 
 unsafe impl Send for PlayerEngine {}
@@ -176,7 +179,8 @@ unsafe impl Send for PlayerEngine {}
 impl PlayerEngine {
     pub fn new() -> Self {
         let shared_level = SharedAudioLevel::new();
-        let (tx, alive) = Self::spawn_audio_thread(shared_level.clone());
+        let effects_params = AudioEffectsParams::new_shared();
+        let (tx, alive) = Self::spawn_audio_thread(shared_level.clone(), effects_params.clone());
         Self {
             cmd_tx: tx,
             thread_alive: alive,
@@ -188,12 +192,14 @@ impl PlayerEngine {
             play_start_time: None,
             accumulated_ms: 0,
             shared_audio_level: shared_level,
+            effects_params,
         }
     }
 
     /// 启动音频线程，返回 (命令发送端, 存活标记)
     fn spawn_audio_thread(
         shared_level: Arc<Mutex<SharedAudioLevel>>,
+        effects_params: Arc<std::sync::Mutex<AudioEffectsParams>>,
     ) -> (mpsc::Sender<AudioCmd>, Arc<AtomicBool>) {
         let (tx, rx) = mpsc::channel::<AudioCmd>();
         let alive = Arc::new(AtomicBool::new(true));
@@ -203,7 +209,7 @@ impl PlayerEngine {
             .name("audio-engine".into())
             .spawn(move || {
                 if let Err(e) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    Self::audio_thread(rx, shared_level);
+                    Self::audio_thread(rx, shared_level, effects_params);
                 })) {
                     eprintln!("[audio-thread] PANIC: {:?}", e);
                 }
@@ -219,7 +225,7 @@ impl PlayerEngine {
     fn ensure_alive(&mut self) {
         if !self.thread_alive.load(Ordering::SeqCst) {
             eprintln!("[PlayerEngine] audio thread dead, respawning...");
-            let (tx, alive) = Self::spawn_audio_thread(self.shared_audio_level.clone());
+            let (tx, alive) = Self::spawn_audio_thread(self.shared_audio_level.clone(), self.effects_params.clone());
             self.cmd_tx = tx;
             self.thread_alive = alive;
             let _ = self.cmd_tx.send(AudioCmd::SetVolume(self.volume));
@@ -256,7 +262,7 @@ impl PlayerEngine {
     }
 
     /// 音频线程主循环
-    fn audio_thread(rx: mpsc::Receiver<AudioCmd>, shared_level: Arc<Mutex<SharedAudioLevel>>) {
+    fn audio_thread(rx: mpsc::Receiver<AudioCmd>, shared_level: Arc<Mutex<SharedAudioLevel>>, effects_params: Arc<std::sync::Mutex<AudioEffectsParams>>) {
         let mut stream: Option<OutputStream> = None;
         let mut handle: Option<rodio::OutputStreamHandle> = None;
         let mut current_sink: Option<Sink> = None;
@@ -312,8 +318,10 @@ impl PlayerEngine {
 
                         eprintln!("[audio-thread] decoded ok, duration={}ms", duration_ms);
 
-                        // 包装为 AnalyzingSource
-                        let analyzing = AnalyzingSource::new(dec, shared_level.clone());
+                        // 音效链: Decoder → Equalizer → Loudness → Analyzer
+                        let eq = EqualizerSource::new(dec, effects_params.clone());
+                        let loud = LoudnessSource::new(eq, effects_params.clone());
+                        let analyzing = AnalyzingSource::new(loud, shared_level.clone());
 
                         let sink = Sink::try_new(h)
                             .map_err(|e| format!("Sink error: {}", e))?;
@@ -342,8 +350,10 @@ impl PlayerEngine {
                         let source = AudioSource::File(path);
                         let (dec, dur) = Self::make_decoder(&source)?;
 
-                        // 包装为 AnalyzingSource
-                        let analyzing = AnalyzingSource::new(dec, shared_level.clone());
+                        // 音效链: Decoder → Equalizer → Loudness → Analyzer
+                        let eq = EqualizerSource::new(dec, effects_params.clone());
+                        let loud = LoudnessSource::new(eq, effects_params.clone());
+                        let analyzing = AnalyzingSource::new(loud, shared_level.clone());
 
                         let sink = Sink::try_new(h)
                             .map_err(|e| format!("Sink error: {}", e))?;
@@ -423,8 +433,10 @@ impl PlayerEngine {
                         let skip_duration = Duration::from_millis(position_ms);
                         let skipped = dec.skip_duration(skip_duration);
 
-                        // 包装为 AnalyzingSource
-                        let analyzing = AnalyzingSource::new(skipped, shared_level.clone());
+                        // 音效链: Decoder → Equalizer → Loudness → Analyzer
+                        let eq = EqualizerSource::new(skipped, effects_params.clone());
+                        let loud = LoudnessSource::new(eq, effects_params.clone());
+                        let analyzing = AnalyzingSource::new(loud, shared_level.clone());
 
                         let sink = Sink::try_new(h)
                             .map_err(|e| format!("Sink error: {}", e))?;
@@ -551,6 +563,31 @@ impl PlayerEngine {
         }
         self.speed = spd.clamp(0.25, 3.0);
         let _ = self.cmd_tx.send(AudioCmd::SetSpeed(self.speed));
+    }
+
+    /// 设置响度增益 (millibels, 0~1500)
+    pub fn set_loudness_gain(&self, mb: i32) {
+        let mb = mb.clamp(0, 1500);
+        if let Ok(mut p) = self.effects_params.lock() {
+            p.loudness_gain_mb = mb;
+        }
+    }
+
+    /// 设置均衡器参数
+    pub fn set_equalizer(&self, enabled: bool, bands: &[i32]) {
+        if let Ok(mut p) = self.effects_params.lock() {
+            p.eq_enabled = enabled;
+            for (i, &val) in bands.iter().enumerate().take(5) {
+                p.eq_band_levels_mb[i] = val.clamp(-1500, 1500);
+            }
+        }
+    }
+
+    /// 重置所有音效参数
+    pub fn reset_effects(&self) {
+        if let Ok(mut p) = self.effects_params.lock() {
+            p.reset();
+        }
     }
 
     /// Seek 到指定位置

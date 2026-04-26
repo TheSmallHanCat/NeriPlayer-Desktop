@@ -56,6 +56,33 @@ export interface LyricLine {
 
 export type RepeatMode = 'off' | 'all' | 'one'
 
+// ─── 均衡器预设（5频段: 60Hz, 230Hz, 910Hz, 3.6kHz, 14kHz，单位 mB） ───
+export const EQ_PRESETS: Record<string, number[]> = {
+  flat:           [0, 0, 0, 0, 0],
+  acoustic:       [300, 200, 0, 100, 200],
+  bass_boost:     [600, 400, 0, 0, 0],
+  bass_reduce:    [-600, -400, 0, 0, 0],
+  classical:      [400, 200, -100, 200, 300],
+  dance:          [500, 200, 100, -100, 200],
+  deep:           [500, 300, 100, -100, -200],
+  electronic:     [500, 300, 0, 100, 400],
+  hip_hop:        [500, 300, 0, 100, 300],
+  jazz:           [300, 100, -100, 100, 300],
+  latin:          [300, 0, -100, 200, 400],
+  loudness:       [500, 200, 0, -100, -200],
+  lounge:         [-200, -100, 0, 100, 200],
+  piano:          [200, 100, 0, 100, 200],
+  pop:            [-100, 200, 400, 200, -100],
+  rnb:            [500, 400, 100, -100, 200],
+  rock:           [400, 200, -100, 200, 400],
+  small_speakers: [400, 200, 100, 200, 400],
+  spoken_word:    [-200, 0, 300, 200, -100],
+  treble_boost:   [0, 0, 0, 400, 600],
+  treble_reduce:  [0, 0, 0, -400, -600],
+  vocal_boost:    [-200, 0, 400, 300, 0],
+  custom:         [0, 0, 0, 0, 0],
+}
+
 // ─── 播放位置插值状态（模块级，rAF 驱动） ───
 let _interpAnchorMs = 0         // 上次后端报告的位置
 let _interpAnchorTime = 0       // 对应的 performance.now() 锚点
@@ -572,6 +599,49 @@ export const usePlayerStore = defineStore('player', () => {
     try { await invoke('set_speed', { speed: spd }) } catch {}
   }
 
+  // ─── 音效参数（响度增益 + 均衡器） ───
+  const loudnessGainMb = ref(0)
+  const equalizerEnabled = ref(false)
+  const equalizerPresetId = ref('flat')
+  const equalizerBands = ref([0, 0, 0, 0, 0]) // 5 bands, mB values
+
+  /** 是否有任何非默认音效 */
+  const hasActiveEffects = computed(() =>
+    playbackSpeed.value !== 1.0
+    || loudnessGainMb.value !== 0
+    || equalizerEnabled.value
+  )
+
+  async function setLoudnessGain(mb: number) {
+    loudnessGainMb.value = Math.round(Math.max(0, Math.min(1500, mb)))
+    try { await invoke('set_loudness_gain', { gainMb: loudnessGainMb.value }) } catch {}
+  }
+
+  async function setEqualizer(enabled: boolean, bands: number[]) {
+    equalizerEnabled.value = enabled
+    equalizerBands.value = bands.map(v => Math.round(Math.max(-1500, Math.min(1500, v))))
+    try { await invoke('set_equalizer', { enabled, bandLevelsMb: equalizerBands.value }) } catch {}
+  }
+
+  async function setEqualizerPreset(presetId: string) {
+    equalizerPresetId.value = presetId
+    const bands = EQ_PRESETS[presetId] || [0, 0, 0, 0, 0]
+    await setEqualizer(presetId !== 'flat', [...bands])
+  }
+
+  async function resetAudioEffects() {
+    loudnessGainMb.value = 0
+    equalizerEnabled.value = false
+    equalizerPresetId.value = 'flat'
+    equalizerBands.value = [0, 0, 0, 0, 0]
+    playbackSpeed.value = 1.0
+    _interpSpeed = 1.0
+    try {
+      await invoke('reset_audio_effects')
+      await invoke('set_speed', { speed: 1.0 })
+    } catch {}
+  }
+
   // 批量替换队列并播放第一首
   function playAll(tracks: TrackInfo[]) {
     if (tracks.length === 0) return
@@ -678,10 +748,12 @@ export const usePlayerStore = defineStore('player', () => {
     repeatMode, shuffleEnabled, volume, lyrics, playError, isLoadingAudio,
     audioLevel, beatImpulse, audioInfo,
     playbackSpeed, sleepTimerMode, sleepRemainingSeconds,
+    loudnessGainMb, equalizerEnabled, equalizerPresetId, equalizerBands, hasActiveEffects,
     progress, interpolatedPositionMs, interpolatedProgress,
     currentTimeFormatted, durationFormatted,
     play, togglePlayPause, pause, resume, seekTo, next, previous,
     toggleRepeatMode, toggleShuffle, cyclePlayMode, playMode, setVolume, setSpeed,
+    setLoudnessGain, setEqualizer, setEqualizerPreset, resetAudioEffects,
     startSleepTimer, startSleepTimerEndOfTrack, startSleepTimerEndOfQueue, cancelSleepTimer,
     playAll, shufflePlay, addToQueueNext, addToQueueEnd, removeFromQueue, clearQueue,
     updateCurrentTrackInfo, restoreOriginalTrackInfo, hasOriginalTrackInfo, replayWithQuality,
