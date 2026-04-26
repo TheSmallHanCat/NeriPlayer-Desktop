@@ -30,9 +30,21 @@ const coverLoadError = ref(false)
 const showVolumeSlider = ref(false)
 const showQueue = ref(false)
 const showAddToPlaylist = ref(false)
-const showSpeedMenu = ref(false)
+const showAudioFxPanel = ref(false)
 const showSleepMenu = ref(false)
 const showMoreSheet = ref(false)
+
+// ─── 均衡器辅助 ───
+import { EQ_PRESETS } from '@/stores/player'
+const eqPresetIds = Object.keys(EQ_PRESETS)
+const eqFreqLabels = ['60', '230', '910', '3.6k', '14k']
+
+function onEqBandChange(index: number, value: number) {
+  const bands = [...player.equalizerBands]
+  bands[index] = Math.round(value)
+  player.setEqualizer(player.equalizerEnabled, bands)
+  player.equalizerPresetId = 'custom'
+}
 
 // --- 来源徽章（对齐 Android PlaybackSourceBadge） ---
 const playbackSourceLabel = computed(() => {
@@ -68,7 +80,7 @@ function openLyricsEditor() {
   } else {
     lyricsEditorText.value = ''
   }
-  moreSheetView.value = 'lyrics-editor'
+  goToSubView('lyrics-editor')
 }
 
 async function applyLyricsFromEditor() {
@@ -77,7 +89,7 @@ async function applyLyricsFromEditor() {
     // 清除歌词
     fetchedLyrics.value = []
     toast.success(t('player.lyrics_cleared'))
-    moreSheetView.value = 'main'
+    goBackToMain()
     return
   }
   try {
@@ -96,7 +108,7 @@ async function applyLyricsFromEditor() {
     console.error('Parse LRC failed:', e)
     toast.error(String(e))
   }
-  moreSheetView.value = 'main'
+  goBackToMain()
 }
 
 // --- 歌词填充（搜索 + 应用歌词） ---
@@ -139,7 +151,7 @@ async function applyLyricFill(result: any) {
       translation: l.translation || undefined,
     }))
     toast.success(t('player.lyrics_fill_applied'))
-    moreSheetView.value = 'main'
+    goBackToMain()
   } catch (e) {
     console.error('Lyric fill failed:', e)
     toast.error(String(e))
@@ -481,9 +493,19 @@ const displayLyrics = computed(() => {
 
 // 更多选项面板子视图
 const moreSheetView = ref<'main' | 'offset' | 'fontsize' | 'speed' | 'search' | 'editinfo' | 'quality' | 'lyrics-editor' | 'lyrics-fill'>('main')
+const moreSheetTransition = ref('slide-left')
+
+function goToSubView(view: typeof moreSheetView.value) {
+  moreSheetTransition.value = 'slide-left'
+  moreSheetView.value = view
+}
+function goBackToMain() {
+  moreSheetTransition.value = 'slide-right'
+  moreSheetView.value = 'main'
+}
 
 // 关闭更多选项面板时重置子视图
-watch(showMoreSheet, (v) => { if (!v) moreSheetView.value = 'main' })
+watch(showMoreSheet, (v) => { if (!v) setTimeout(() => { moreSheetView.value = 'main' }, 220) })
 
 // --- 获取歌曲信息（搜索） ---
 const searchQuery = ref('')
@@ -512,7 +534,7 @@ function applySearchResult(result: any) {
     coverUrl: result.cover_url || player.currentTrack?.coverUrl,
   })
   toast.success(t('player.info_applied'))
-  moreSheetView.value = 'main'
+  goBackToMain()
 }
 
 // --- 编辑歌曲信息 ---
@@ -524,7 +546,7 @@ function openEditInfo() {
   editTitle.value = player.currentTrack?.title || ''
   editArtist.value = player.currentTrack?.artist || ''
   editCoverUrl.value = player.currentTrack?.coverUrl || ''
-  moreSheetView.value = 'editinfo'
+  goToSubView('editinfo')
 }
 
 function saveEditInfo() {
@@ -534,13 +556,13 @@ function saveEditInfo() {
     coverUrl: editCoverUrl.value,
   })
   toast.success(t('player.info_applied'))
-  moreSheetView.value = 'main'
+  goBackToMain()
 }
 
 function restoreInfo() {
   player.restoreOriginalTrackInfo()
   toast.success(t('player.info_restored'))
-  moreSheetView.value = 'main'
+  goBackToMain()
 }
 
 // --- 音质切换 ---
@@ -703,8 +725,8 @@ const dynamicColorVars = computed(() => {
     '--np-primary': primary,
     '--np-on-primary': onPrimary,
     '--np-primary-container': primaryContainer,
-    '--np-on-surface': 'rgba(255,255,255,0.9)',
-    '--np-on-surface-variant': 'rgba(255,255,255,0.55)',
+    '--np-on-surface': 'rgba(255,255,255,1)',
+    '--np-on-surface-variant': 'rgba(255,255,255,0.78)',
     '--waveform-thumb-color': primary,
   }
 })
@@ -918,20 +940,97 @@ const sliderActiveColor = computed(() => {
               <span class="volume-label">{{ Math.round(player.volume * 100) }}%</span>
             </div>
           </div>
-          <!-- 播放速度 -->
+          <!-- 音效 (AudioFX) -->
           <div class="speed-wrap">
-            <button class="tool-btn" :class="{ active: showSpeedMenu }" @click="showSpeedMenu = !showSpeedMenu">
-              <span class="speed-label">{{ player.playbackSpeed === 1 ? '1x' : player.playbackSpeed + 'x' }}</span>
+            <button class="tool-btn" :class="{ active: showAudioFxPanel || player.hasActiveEffects }" @click="showAudioFxPanel = !showAudioFxPanel">
+              <span class="material-symbols-rounded">tune</span>
             </button>
-            <div v-if="showSpeedMenu" class="speed-popover" @mouseleave="showSpeedMenu = false">
-              <button
-                v-for="spd in [0.5, 0.75, 0.85, 0.9, 1, 1.1, 1.25, 1.5, 2]"
-                :key="spd"
-                class="speed-option"
-                :class="{ active: player.playbackSpeed === spd }"
-                @click="player.setSpeed(spd); showSpeedMenu = false"
-              >
-                {{ spd }}x
+            <div v-if="showAudioFxPanel" class="audiofx-popover" @mouseleave="showAudioFxPanel = false">
+              <!-- 播放速度 -->
+              <div class="audiofx-section">
+                <div class="audiofx-section-header">{{ t('player.speed') }}</div>
+                <div class="audiofx-speed-grid">
+                  <button
+                    v-for="spd in [0.5, 0.75, 0.85, 1.0, 1.25, 1.5, 2.0, 3.0]"
+                    :key="spd"
+                    class="speed-option"
+                    :class="{ active: player.playbackSpeed === spd }"
+                    @click="player.setSpeed(spd)"
+                  >
+                    {{ spd }}x
+                  </button>
+                </div>
+                <div class="audiofx-slider-row">
+                  <span class="audiofx-slider-label">0.25x</span>
+                  <input
+                    type="range" min="0.25" max="3" step="0.05"
+                    :value="player.playbackSpeed"
+                    class="audiofx-slider"
+                    @input="player.setSpeed(parseFloat(($event.target as HTMLInputElement).value))"
+                  />
+                  <span class="audiofx-slider-label">3x</span>
+                  <span class="audiofx-slider-value">{{ player.playbackSpeed.toFixed(2) }}x</span>
+                </div>
+              </div>
+
+              <!-- 响度增益 -->
+              <div class="audiofx-section">
+                <div class="audiofx-section-header">{{ t('player.loudness_gain') }}</div>
+                <div class="audiofx-preset-row">
+                  <button v-for="db in [0, 300, 600, 900, 1200, 1500]" :key="db"
+                    class="speed-option" :class="{ active: player.loudnessGainMb === db }"
+                    @click="player.setLoudnessGain(db)"
+                  >
+                    {{ db === 0 ? '0' : '+' + (db / 100).toFixed(0) }}dB
+                  </button>
+                </div>
+                <div class="audiofx-slider-row">
+                  <span class="audiofx-slider-label">0</span>
+                  <input
+                    type="range" min="0" max="1500" step="50"
+                    :value="player.loudnessGainMb"
+                    class="audiofx-slider"
+                    @input="player.setLoudnessGain(parseFloat(($event.target as HTMLInputElement).value))"
+                  />
+                  <span class="audiofx-slider-label">+15dB</span>
+                  <span class="audiofx-slider-value">+{{ (player.loudnessGainMb / 100).toFixed(1) }}dB</span>
+                </div>
+              </div>
+
+              <!-- 均衡器 -->
+              <div class="audiofx-section">
+                <div class="audiofx-section-header">
+                  {{ t('player.equalizer') }}
+                  <label class="audiofx-toggle">
+                    <input type="checkbox" :checked="player.equalizerEnabled"
+                      @change="player.setEqualizer(($event.target as HTMLInputElement).checked, player.equalizerBands)" />
+                    <span class="audiofx-toggle-slider"></span>
+                  </label>
+                </div>
+                <select class="audiofx-select" :value="player.equalizerPresetId"
+                  @change="player.setEqualizerPreset(($event.target as HTMLSelectElement).value)">
+                  <option v-for="pid in eqPresetIds" :key="pid" :value="pid">
+                    {{ t('player.eq_' + pid) }}
+                  </option>
+                </select>
+                <div v-if="player.equalizerEnabled" class="audiofx-eq-bands">
+                  <div v-for="(freq, i) in eqFreqLabels" :key="i" class="audiofx-eq-band">
+                    <span class="audiofx-eq-val">{{ (player.equalizerBands[i] / 100).toFixed(1) }}</span>
+                    <input type="range" min="-1500" max="1500" step="50"
+                      class="audiofx-eq-slider" orient="vertical"
+                      :value="player.equalizerBands[i]"
+                      @input="onEqBandChange(i, parseFloat(($event.target as HTMLInputElement).value))" />
+                    <span class="audiofx-eq-freq">{{ freq }}</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 音调说明 -->
+              <div class="audiofx-note">{{ t('player.pitch_note') }}</div>
+
+              <!-- 重置 -->
+              <button class="speed-option audiofx-reset" @click="player.resetAudioEffects()">
+                {{ t('player.reset_effects') }}
               </button>
             </div>
           </div>
@@ -964,15 +1063,19 @@ const sliderActiveColor = computed(() => {
 
     <!-- 更多选项面板（对齐 Android MoreOptionsSheet） -->
     <Teleport to="body">
+      <Transition name="more-sheet">
       <div v-if="showMoreSheet" class="np-more-overlay" @click="showMoreSheet = false">
         <div class="np-more-sheet" @click.stop>
+
+          <Transition :name="moreSheetTransition" mode="out-in">
+          <div :key="moreSheetView" class="np-more-sheet-content">
 
           <!-- 主菜单（对齐 Android MoreOptionsSheet 顺序） -->
           <template v-if="moreSheetView === 'main'">
             <h4 class="np-more-title">{{ t('player.more_options') }}</h4>
 
             <!-- 获取歌曲信息 -->
-            <button class="np-more-list-item" @click="searchQuery = player.currentTrack?.title || ''; searchResults = []; moreSheetView = 'search'">
+            <button class="np-more-list-item" @click="searchQuery = player.currentTrack?.title || ''; searchResults = []; goToSubView('search')">
               <span class="material-symbols-rounded">info</span>
               <div class="np-more-list-info">
                 <span class="np-more-list-headline">{{ t('player.get_info') }}</span>
@@ -990,7 +1093,7 @@ const sliderActiveColor = computed(() => {
             </button>
 
             <!-- 音质切换（仅在线来源显示） -->
-            <button v-if="currentSource !== 'local'" class="np-more-list-item" @click="moreSheetView = 'quality'">
+            <button v-if="currentSource !== 'local'" class="np-more-list-item" @click="goToSubView('quality')">
               <span class="material-symbols-rounded">music_note</span>
               <div class="np-more-list-info">
                 <span class="np-more-list-headline">{{ t('player.quality_switch') }}</span>
@@ -1000,7 +1103,7 @@ const sliderActiveColor = computed(() => {
             </button>
 
             <!-- 音频效果 -->
-            <button class="np-more-list-item" @click="moreSheetView = 'speed'">
+            <button class="np-more-list-item" @click="goToSubView('speed')">
               <span class="material-symbols-rounded">tune</span>
               <div class="np-more-list-info">
                 <span class="np-more-list-headline">{{ t('player.audio_effects') }}</span>
@@ -1010,7 +1113,7 @@ const sliderActiveColor = computed(() => {
             </button>
 
             <!-- 歌词偏移 -->
-            <button class="np-more-list-item" @click="moreSheetView = 'offset'">
+            <button class="np-more-list-item" @click="goToSubView('offset')">
               <span class="material-symbols-rounded">timer</span>
               <div class="np-more-list-info">
                 <span class="np-more-list-headline">{{ t('player.lyric_offset') }}</span>
@@ -1020,7 +1123,7 @@ const sliderActiveColor = computed(() => {
             </button>
 
             <!-- 歌词字号 -->
-            <button class="np-more-list-item" @click="moreSheetView = 'fontsize'">
+            <button class="np-more-list-item" @click="goToSubView('fontsize')">
               <span class="material-symbols-rounded">format_size</span>
               <div class="np-more-list-info">
                 <span class="np-more-list-headline">{{ t('player.font_scale') }}</span>
@@ -1039,7 +1142,7 @@ const sliderActiveColor = computed(() => {
             </button>
 
             <!-- 歌词填充（对齐 Android FillOptionsDialog） -->
-            <button class="np-more-list-item" @click="lyricFillQuery = player.currentTrack?.title || ''; lyricFillResults = []; moreSheetView = 'lyrics-fill'">
+            <button class="np-more-list-item" @click="lyricFillQuery = player.currentTrack?.title || ''; lyricFillResults = []; goToSubView('lyrics-fill')">
               <span class="material-symbols-rounded">lyrics</span>
               <div class="np-more-list-info">
                 <span class="np-more-list-headline">{{ t('player.lyrics_fill') }}</span>
@@ -1079,7 +1182,7 @@ const sliderActiveColor = computed(() => {
           <!-- 子视图：歌词偏移 -->
           <template v-else-if="moreSheetView === 'offset'">
             <div class="np-more-sub-header">
-              <button class="np-more-back" @click="moreSheetView = 'main'">
+              <button class="np-more-back" @click="goBackToMain()">
                 <span class="material-symbols-rounded">arrow_back</span>
               </button>
               <h4 class="np-more-title">{{ t('player.lyric_offset') }}</h4>
@@ -1101,7 +1204,7 @@ const sliderActiveColor = computed(() => {
           <!-- 子视图：字号 -->
           <template v-else-if="moreSheetView === 'fontsize'">
             <div class="np-more-sub-header">
-              <button class="np-more-back" @click="moreSheetView = 'main'">
+              <button class="np-more-back" @click="goBackToMain()">
                 <span class="material-symbols-rounded">arrow_back</span>
               </button>
               <h4 class="np-more-title">{{ t('player.font_scale') }}</h4>
@@ -1124,7 +1227,7 @@ const sliderActiveColor = computed(() => {
           <!-- 子视图：音频效果（对齐 Android PlaybackSoundSheet） -->
           <template v-else-if="moreSheetView === 'speed'">
             <div class="np-more-sub-header">
-              <button class="np-more-back" @click="moreSheetView = 'main'">
+              <button class="np-more-back" @click="goBackToMain()">
                 <span class="material-symbols-rounded">arrow_back</span>
               </button>
               <h4 class="np-more-title">{{ t('player.audio_effects') }}</h4>
@@ -1166,7 +1269,7 @@ const sliderActiveColor = computed(() => {
           <!-- 子视图：获取歌曲信息 -->
           <template v-else-if="moreSheetView === 'search'">
             <div class="np-more-sub-header">
-              <button class="np-more-back" @click="moreSheetView = 'main'">
+              <button class="np-more-back" @click="goBackToMain()">
                 <span class="material-symbols-rounded">arrow_back</span>
               </button>
               <h4 class="np-more-title">{{ t('player.get_info') }}</h4>
@@ -1204,7 +1307,7 @@ const sliderActiveColor = computed(() => {
           <!-- 子视图：编辑歌曲信息 -->
           <template v-else-if="moreSheetView === 'editinfo'">
             <div class="np-more-sub-header">
-              <button class="np-more-back" @click="moreSheetView = 'main'">
+              <button class="np-more-back" @click="goBackToMain()">
                 <span class="material-symbols-rounded">arrow_back</span>
               </button>
               <h4 class="np-more-title">{{ t('player.edit_info') }}</h4>
@@ -1235,7 +1338,7 @@ const sliderActiveColor = computed(() => {
           <!-- 子视图：音质切换 -->
           <template v-else-if="moreSheetView === 'quality'">
             <div class="np-more-sub-header">
-              <button class="np-more-back" @click="moreSheetView = 'main'">
+              <button class="np-more-back" @click="goBackToMain()">
                 <span class="material-symbols-rounded">arrow_back</span>
               </button>
               <h4 class="np-more-title">{{ t('player.quality_switch') }}</h4>
@@ -1270,7 +1373,7 @@ const sliderActiveColor = computed(() => {
           <!-- 子视图：歌词编辑器（对齐 Android LyricsEditorSheet） -->
           <template v-else-if="moreSheetView === 'lyrics-editor'">
             <div class="np-more-sub-header">
-              <button class="np-more-back" @click="moreSheetView = 'main'">
+              <button class="np-more-back" @click="goBackToMain()">
                 <span class="material-symbols-rounded">arrow_back</span>
               </button>
               <h4 class="np-more-title">{{ t('player.lyrics_editor') }}</h4>
@@ -1298,7 +1401,7 @@ const sliderActiveColor = computed(() => {
           <!-- 子视图：歌词填充（对齐 Android FillOptionsDialog） -->
           <template v-else-if="moreSheetView === 'lyrics-fill'">
             <div class="np-more-sub-header">
-              <button class="np-more-back" @click="moreSheetView = 'main'">
+              <button class="np-more-back" @click="goBackToMain()">
                 <span class="material-symbols-rounded">arrow_back</span>
               </button>
               <h4 class="np-more-title">{{ t('player.lyrics_fill') }}</h4>
@@ -1333,8 +1436,12 @@ const sliderActiveColor = computed(() => {
             </div>
           </template>
 
+          </div>
+          </Transition>
+
         </div>
       </div>
+      </Transition>
     </Teleport>
 
     <!-- 右键菜单 -->
@@ -1384,17 +1491,9 @@ const sliderActiveColor = computed(() => {
   transition: background 0.8s ease;
 }
 
+// 对齐 Android：无全局遮罩，对比度完全由文字颜色和动态配色保证
 .np-scrim {
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(
-    180deg,
-    rgba(0,0,0,0.05) 0%,
-    rgba(0,0,0,0.12) 40%,
-    rgba(0,0,0,0.25) 100%
-  );
-  z-index: 1;
-  pointer-events: none;
+  display: none;
 }
 
 /* 顶栏 */
@@ -1419,7 +1518,7 @@ const sliderActiveColor = computed(() => {
 .np-from-label {
   font-size: 11px;
   font-weight: 600;
-  color: rgba(255,255,255,0.45);
+  color: rgba(255,255,255,0.60);
   text-transform: uppercase;
   letter-spacing: 1.2px;
 }
@@ -1427,7 +1526,7 @@ const sliderActiveColor = computed(() => {
 .np-from-name {
   font-size: 13px;
   font-weight: 600;
-  color: rgba(255,255,255,0.75);
+  color: rgba(255,255,255,0.87);
 }
 
 .np-icon-btn {
@@ -1437,10 +1536,10 @@ const sliderActiveColor = computed(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  color: rgba(255,255,255,0.8);
+  color: rgba(255,255,255,0.92);
   transition: background 150ms;
 
-  &:hover { background: rgba(255,255,255,0.08); }
+  &:hover { background: rgba(255,255,255,0.12); }
   .material-symbols-rounded { font-size: 28px; }
 }
 
@@ -1591,7 +1690,7 @@ const sliderActiveColor = computed(() => {
 
 .np-artist {
   font-size: 14px;
-  color: rgba(255,255,255,0.55);
+  color: rgba(255,255,255,0.78);
   margin-top: 3px;
   font-weight: 500;
 }
@@ -1606,7 +1705,7 @@ const sliderActiveColor = computed(() => {
   justify-content: space-between;
   font-size: 11px;
   font-weight: 600;
-  color: rgba(255,255,255,0.4);
+  color: rgba(255,255,255,0.78);
   padding: 2px 4px 0;
   font-variant-numeric: tabular-nums;
 }
@@ -1615,7 +1714,7 @@ const sliderActiveColor = computed(() => {
   text-align: center;
   font-size: 10px;
   font-weight: 600;
-  color: rgba(255,255,255,0.28);
+  color: rgba(255,255,255,0.60);
   letter-spacing: 0.5px;
   margin-top: 0px;
 }
@@ -1642,10 +1741,10 @@ const sliderActiveColor = computed(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  color: rgba(255,255,255,0.4);
+  color: rgba(255,255,255,0.87);
   transition: color 150ms, background 150ms;
 
-  &:hover { background: rgba(255,255,255,0.07); color: rgba(255,255,255,0.75); }
+  &:hover { background: rgba(255,255,255,0.10); color: rgba(255,255,255,0.95); }
   &.active { color: var(--np-primary, white); }
   &:active { transform: scale(0.9); }
 }
@@ -1709,14 +1808,14 @@ const sliderActiveColor = computed(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  color: rgba(255,255,255,0.35);
+  color: rgba(255,255,255,0.72);
   transition: color 150ms, background 150ms;
 
   .material-symbols-rounded { font-size: 20px; }
 
-  &:hover { background: rgba(255,255,255,0.06); color: rgba(255,255,255,0.65); }
+  &:hover { background: rgba(255,255,255,0.10); color: rgba(255,255,255,0.87); }
   &.active { color: var(--np-primary, var(--md-primary-container, #E8DEF8)); }
-  &.disabled { opacity: 0.25; cursor: default; }
+  &.disabled { opacity: 0.38; cursor: default; }
   &:active { transform: scale(0.88); }
 }
 
@@ -1816,7 +1915,7 @@ const sliderActiveColor = computed(() => {
   font-variant-numeric: tabular-nums;
 }
 
-/* 播放速度 */
+/* 播放速度 / 音效面板 */
 .speed-wrap, .sleep-wrap {
   position: relative;
 }
@@ -1825,6 +1924,197 @@ const sliderActiveColor = computed(() => {
   font-size: 12px;
   font-weight: 700;
   letter-spacing: -0.3px;
+}
+
+.audiofx-popover {
+  position: absolute;
+  bottom: 46px;
+  right: -40px;
+  background: rgba(30, 28, 34, 0.96);
+  backdrop-filter: blur(24px);
+  border-radius: 16px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  box-shadow: 0 8px 40px rgba(0,0,0,0.6);
+  border: 1px solid rgba(255,255,255,0.08);
+  z-index: 10;
+  min-width: 300px;
+  max-height: 480px;
+  overflow-y: auto;
+
+  &::-webkit-scrollbar { width: 4px; }
+  &::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 2px; }
+}
+
+.audiofx-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.audiofx-section-header {
+  font-size: 12px;
+  font-weight: 600;
+  color: rgba(255,255,255,0.5);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.audiofx-speed-grid, .audiofx-preset-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.audiofx-speed-grid .speed-option,
+.audiofx-preset-row .speed-option {
+  padding: 5px 10px;
+  font-size: 12px;
+  min-width: unset;
+  flex: 0 0 auto;
+}
+
+.audiofx-slider-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.audiofx-slider-label {
+  font-size: 10px;
+  color: rgba(255,255,255,0.35);
+  min-width: 28px;
+  text-align: center;
+}
+
+.audiofx-slider-value {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--md-primary, #D0BCFF);
+  min-width: 42px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.audiofx-slider {
+  flex: 1;
+  height: 4px;
+  accent-color: var(--md-primary, #D0BCFF);
+  cursor: pointer;
+}
+
+.audiofx-select {
+  background: rgba(255,255,255,0.08);
+  color: rgba(255,255,255,0.85);
+  border: 1px solid rgba(255,255,255,0.1);
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  outline: none;
+
+  option {
+    background: #1e1c22;
+    color: white;
+  }
+}
+
+.audiofx-toggle {
+  position: relative;
+  display: inline-block;
+  width: 34px;
+  height: 18px;
+
+  input { opacity: 0; width: 0; height: 0; }
+
+  .audiofx-toggle-slider {
+    position: absolute;
+    cursor: pointer;
+    inset: 0;
+    background: rgba(255,255,255,0.15);
+    border-radius: 18px;
+    transition: 0.2s;
+
+    &::before {
+      content: '';
+      position: absolute;
+      height: 14px;
+      width: 14px;
+      left: 2px;
+      bottom: 2px;
+      background: white;
+      border-radius: 50%;
+      transition: 0.2s;
+    }
+  }
+
+  input:checked + .audiofx-toggle-slider {
+    background: var(--md-primary, #D0BCFF);
+  }
+
+  input:checked + .audiofx-toggle-slider::before {
+    transform: translateX(16px);
+  }
+}
+
+.audiofx-eq-bands {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 0;
+}
+
+.audiofx-eq-band {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  flex: 1;
+}
+
+.audiofx-eq-val {
+  font-size: 10px;
+  color: var(--md-primary, #D0BCFF);
+  font-variant-numeric: tabular-nums;
+  min-height: 14px;
+}
+
+.audiofx-eq-freq {
+  font-size: 9px;
+  color: rgba(255,255,255,0.35);
+}
+
+.audiofx-eq-slider {
+  writing-mode: vertical-lr;
+  direction: rtl;
+  width: 4px;
+  height: 80px;
+  accent-color: var(--md-primary, #D0BCFF);
+  cursor: pointer;
+  appearance: slider-vertical;
+}
+
+.audiofx-note {
+  font-size: 11px;
+  color: rgba(255,255,255,0.3);
+  font-style: italic;
+  text-align: center;
+  padding: 2px 0;
+}
+
+.audiofx-reset {
+  width: 100%;
+  text-align: center;
+  color: #EF5350 !important;
+  border-top: 1px solid rgba(255,255,255,0.06);
+  margin-top: 2px;
+  padding-top: 10px;
 }
 
 .speed-popover, .sleep-popover {
@@ -1946,7 +2236,40 @@ const sliderActiveColor = computed(() => {
   }
 }
 
-/* 更多选项面板 */
+/* 更多选项面板 — Overlay + Sheet 过渡 */
+.more-sheet-enter-active {
+  transition: opacity 280ms cubic-bezier(0.2, 0, 0, 1);
+  .np-more-sheet {
+    transition: opacity 280ms cubic-bezier(0.2, 0, 0, 1), transform 280ms cubic-bezier(0.2, 0, 0, 1);
+  }
+}
+.more-sheet-leave-active {
+  transition: opacity 200ms cubic-bezier(0.2, 0, 0, 1);
+  .np-more-sheet {
+    transition: opacity 200ms cubic-bezier(0.2, 0, 0, 1), transform 200ms cubic-bezier(0.2, 0, 0, 1);
+  }
+}
+.more-sheet-enter-from,
+.more-sheet-leave-to {
+  opacity: 0;
+  .np-more-sheet {
+    opacity: 0;
+    transform: scale(0.92) translateY(16px);
+  }
+}
+
+/* 子视图滑动过渡 */
+.slide-left-enter-active,
+.slide-left-leave-active,
+.slide-right-enter-active,
+.slide-right-leave-active {
+  transition: transform 180ms cubic-bezier(0.2, 0, 0, 1), opacity 180ms cubic-bezier(0.2, 0, 0, 1);
+}
+.slide-left-enter-from { transform: translateX(24px); opacity: 0; }
+.slide-left-leave-to   { transform: translateX(-24px); opacity: 0; }
+.slide-right-enter-from { transform: translateX(-24px); opacity: 0; }
+.slide-right-leave-to   { transform: translateX(24px); opacity: 0; }
+
 .np-more-overlay {
   position: fixed;
   inset: 0;
@@ -1964,16 +2287,19 @@ const sliderActiveColor = computed(() => {
   overflow-y: auto;
   background: rgba(30, 28, 34, 0.95);
   backdrop-filter: blur(20px);
-  border-radius: 28px;
+  border-radius: 24px;
   padding: 24px;
   box-shadow: 0 16px 48px rgba(0,0,0,0.5);
   border: 1px solid rgba(255,255,255,0.06);
-  animation: np-sheet-in 200ms cubic-bezier(0.2, 0, 0, 1);
+
+  /* 自定义滚动条 */
+  &::-webkit-scrollbar { width: 4px; }
+  &::-webkit-scrollbar-track { background: transparent; }
+  &::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 2px; }
 }
 
-@keyframes np-sheet-in {
-  from { opacity: 0; transform: scale(0.92); }
-  to { opacity: 1; transform: scale(1); }
+.np-more-sheet-content {
+  min-height: 0;
 }
 
 .np-more-title {
@@ -1989,6 +2315,8 @@ const sliderActiveColor = computed(() => {
   align-items: center;
   gap: 8px;
   margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid rgba(255,255,255,0.06);
 
   .np-more-title { margin: 0; }
 }
@@ -2013,18 +2341,32 @@ const sliderActiveColor = computed(() => {
   width: 100%;
   padding: 14px 4px;
   border: none;
+  border-bottom: 1px solid rgba(255,255,255,0.05);
   background: transparent;
   color: rgba(255,255,255,0.85);
   cursor: pointer;
-  border-radius: 12px;
-  transition: background 0.15s;
+  border-radius: 0;
+  transition: background 0.15s, transform 0.15s cubic-bezier(0.2, 0, 0, 1);
 
-  &:hover { background: rgba(255,255,255,0.06); }
+  &:last-child { border-bottom: none; }
 
-  > .material-symbols-rounded {
-    font-size: 22px;
-    color: rgba(255,255,255,0.5);
+  &:hover {
+    background: rgba(255,255,255,0.06);
+    transform: translateX(2px);
+    .np-more-chevron { color: rgba(255,255,255,0.45) !important; }
+  }
+
+  > .material-symbols-rounded:first-child {
+    font-size: 20px;
+    color: rgba(255,255,255,0.6);
     flex-shrink: 0;
+    width: 36px;
+    height: 36px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    background: rgba(255,255,255,0.07);
   }
 }
 
@@ -2049,6 +2391,7 @@ const sliderActiveColor = computed(() => {
 .np-more-chevron {
   font-size: 20px !important;
   color: rgba(255,255,255,0.25) !important;
+  transition: color 0.15s;
 }
 
 // 速度选择网格
