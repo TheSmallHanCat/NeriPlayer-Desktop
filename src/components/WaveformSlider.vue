@@ -8,7 +8,7 @@ const props = withDefaults(defineProps<{
   inactiveColor?: string
 }>(), {
   activeColor: '#fff',
-  inactiveColor: 'rgba(255,255,255,0.3)',
+  inactiveColor: 'rgba(255,255,255,0.35)',
 })
 
 const emit = defineEmits<{

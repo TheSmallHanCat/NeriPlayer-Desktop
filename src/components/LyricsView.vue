@@ -366,13 +366,13 @@ function seekToLine(line: LyricLine) {
   font-weight: 700;
   line-height: 1.5;
   letter-spacing: -0.2px;
-  color: rgba(255, 255, 255, 0.5);
+  color: rgba(255, 255, 255, 0.4);
   white-space: pre-wrap;
   transition: color 0.4s;
   position: relative;
   z-index: 1;
   .active & { color: white; }
-  .clear-text & { color: rgba(255, 255, 255, 0.45); }
+  .clear-text & { color: rgba(255, 255, 255, 0.40); }
   .clear-text.active & { color: white; }
 }
 
@@ -387,14 +387,14 @@ function seekToLine(line: LyricLine) {
   display: block;
   font-size: calc(16px * var(--lyric-font-scale, 1));
   font-weight: 400;
-  color: rgba(255, 255, 255, 0.25);
+  color: rgba(255, 255, 255, 0.30);
   margin-top: 4px;
   line-height: 1.35;
   position: relative;
   z-index: 1;
 
   .active & { color: rgba(255, 255, 255, 0.85); }
-  .past & { color: rgba(255, 255, 255, 0.2); }
+  .past & { color: rgba(255, 255, 255, 0.22); }
 }
 
 .tl-fade-enter-active { transition: opacity 0.25s ease; }

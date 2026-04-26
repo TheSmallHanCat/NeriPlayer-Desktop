@@ -258,12 +258,21 @@ onUnmounted(() => {
 
 /* 播放器模式下窗口控制按钮适配更高的顶栏 */
 .tb-np-mode .tb-ctrl {
-  width: 48px;
+  width: 40px;
+  height: 40px;
+  align-self: center;
+  border-radius: var(--radius-full);
 }
 
 .tb-np-mode .tb-ctrl svg {
   width: 14px;
   height: 14px;
+}
+
+.tb-np-mode .tb-controls {
+  align-items: center;
+  gap: 2px;
+  padding-right: 8px;
 }
 
 /* ========== 公共 ========== */

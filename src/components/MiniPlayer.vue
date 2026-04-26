@@ -95,6 +95,18 @@ const volumeIcon = computed(() => {
   if (player.volume < 0.5) return 'volume_down'
   return 'volume_up'
 })
+
+const volumePercent = computed(() => Math.round(player.volume * 100))
+
+/** 当前播放时间（ms），拖拽时用拖拽位置 */
+const currentTimeMs = computed(() =>
+  isDraggingProgress.value
+    ? dragRatio.value * player.durationMs
+    : player.interpolatedProgress * player.durationMs
+)
+
+const currentTimeFormatted = computed(() => formatTime(currentTimeMs.value))
+const durationFormatted = computed(() => formatTime(player.durationMs))
 </script>
 
 <template>
@@ -137,6 +149,7 @@ const volumeIcon = computed(() => {
         <div class="mp-info">
           <div class="mp-title">{{ player.currentTrack?.title || t('player.not_playing') }}</div>
           <div class="mp-artist">{{ player.currentTrack?.artist || '' }}</div>
+          <div v-if="player.durationMs > 0" class="mp-time">{{ currentTimeFormatted }} / {{ durationFormatted }}</div>
         </div>
       </div>
 
@@ -153,15 +166,15 @@ const volumeIcon = computed(() => {
           <span class="material-symbols-rounded filled">skip_previous</span>
         </button>
         <button class="mp-play-btn" @click="player.togglePlayPause()" :disabled="player.isLoadingAudio">
-          <transition name="mp-icon" mode="out-in">
+          <transition name="mp-icon">
             <span
               v-if="player.isLoadingAudio"
-              class="material-symbols-rounded spinning"
+              class="material-symbols-rounded mp-icon-abs spinning"
               key="loading"
             >progress_activity</span>
             <span
               v-else
-              class="material-symbols-rounded filled"
+              class="material-symbols-rounded mp-icon-abs filled"
               :key="player.isPlaying ? 'p' : 'r'"
             >{{ player.isPlaying ? 'pause' : 'play_arrow' }}</span>
           </transition>
@@ -190,10 +203,11 @@ const volumeIcon = computed(() => {
               min="0"
               max="1"
               step="0.01"
-              :value="1 - player.volume"
+              :value="player.volume"
               class="mp-volume-slider"
-              @input="player.setVolume(1 - parseFloat(($event.target as HTMLInputElement).value))"
+              @input="player.setVolume(parseFloat(($event.target as HTMLInputElement).value))"
             />
+            <div class="mp-volume-label">{{ volumePercent }}%</div>
           </div>
         </div>
         <button class="mp-tool-btn" @click="showQueue = !showQueue">
@@ -366,6 +380,15 @@ const volumeIcon = computed(() => {
   white-space: nowrap;
 }
 
+.mp-time {
+  font-size: 11px;
+  color: var(--md-on-surface-variant);
+  opacity: 0.7;
+  line-height: 1.3;
+  font-variant-numeric: tabular-nums;
+  margin-top: 1px;
+}
+
 /* ── 中：播放控制 ── */
 .mp-center {
   display: flex;
@@ -408,12 +431,22 @@ const volumeIcon = computed(() => {
   margin: 0 4px;
   transition: transform 150ms, box-shadow 150ms;
   overflow: hidden;
+  position: relative;
 
   .material-symbols-rounded { font-size: 26px; }
 
   &:hover { transform: scale(1.06); box-shadow: 0 2px 12px rgba(0,0,0,0.2); }
   &:active { transform: scale(0.92); }
   &:disabled { opacity: 0.5; }
+}
+
+// 绝对定位图标，新旧同时存在，消除 out-in 空白间隙
+.mp-icon-abs {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 /* ── 右：工具按钮 ── */
@@ -482,6 +515,15 @@ const volumeIcon = computed(() => {
     cursor: pointer;
     box-shadow: 0 1px 4px rgba(0,0,0,0.2);
   }
+}
+
+.mp-volume-label {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--md-on-surface-variant);
+  margin-top: 8px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .spinning {
