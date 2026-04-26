@@ -12,7 +12,7 @@ const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/
 pub struct AppState {
     pub player: Mutex<PlayerEngine>,
     pub queue: Mutex<PlayQueue>,
-    pub http: reqwest::Client,
+    pub http: parking_lot::RwLock<reqwest::Client>,
     /// 共享 Cookie Jar — 允许外部注入持久化登录 Cookie
     pub cookie_jar: Arc<reqwest::cookie::Jar>,
     /// 三平台登录状态
@@ -25,16 +25,35 @@ impl AppState {
         let http = reqwest::Client::builder()
             .cookie_provider(jar.clone())
             .user_agent(USER_AGENT)
+            .no_proxy()
             .build()
             .expect("Failed to create HTTP client");
 
         Self {
             player: Mutex::new(PlayerEngine::new()),
             queue: Mutex::new(PlayQueue::new()),
-            http,
+            http: parking_lot::RwLock::new(http),
             cookie_jar: jar,
             auth: Mutex::new(AuthState::default()),
         }
+    }
+
+    /// 重建 HTTP Client，切换代理模式
+    pub fn rebuild_http(&self, bypass_proxy: bool) {
+        let mut builder = reqwest::Client::builder()
+            .cookie_provider(self.cookie_jar.clone())
+            .user_agent(USER_AGENT);
+        if bypass_proxy {
+            builder = builder.no_proxy();
+        }
+        if let Ok(client) = builder.build() {
+            *self.http.write() = client;
+        }
+    }
+
+    /// 获取当前 HTTP Client 的克隆（O(1)，reqwest::Client 内部是 Arc）
+    pub fn http(&self) -> reqwest::Client {
+        self.http.read().clone()
     }
 }
 

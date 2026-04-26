@@ -36,7 +36,7 @@ pub async fn search(query: String, platform: String, state: State<'_, AppState>)
 }
 
 async fn search_netease(query: &str, state: &State<'_, AppState>) -> AppResult<Vec<SearchResult>> {
-    let client = NeteaseClient::new(&state.http);
+    let client = NeteaseClient::new(&state.http());
     let results = client.search(query, 30, 0).await?;
 
     Ok(results.into_iter().map(|r| SearchResult {
@@ -51,7 +51,7 @@ async fn search_netease(query: &str, state: &State<'_, AppState>) -> AppResult<V
 }
 
 async fn search_bilibili(query: &str, state: &State<'_, AppState>) -> AppResult<Vec<SearchResult>> {
-    let client = BiliClient::new(&state.http);
+    let client = BiliClient::new(&state.http());
     let resp = client.search(query).await?;
 
     let results = resp["data"]["result"].as_array()
@@ -94,7 +94,7 @@ async fn search_bilibili(query: &str, state: &State<'_, AppState>) -> AppResult<
 }
 
 async fn search_youtube(_query: &str, state: &State<'_, AppState>) -> AppResult<Vec<SearchResult>> {
-    let client = crate::api::youtube::client::YouTubeClient::new(&state.http);
+    let client = crate::api::youtube::client::YouTubeClient::new(&state.http());
     let resp = client.search(_query).await?;
 
     // InnerTube 搜索结果解析
@@ -151,7 +151,7 @@ async fn search_youtube(_query: &str, state: &State<'_, AppState>) -> AppResult<
 }
 
 async fn search_lrclib(query: &str, state: &State<'_, AppState>) -> AppResult<Vec<SearchResult>> {
-    let client = LrcLibClient::new(&state.http);
+    let client = LrcLibClient::new(&state.http());
     let results = client.search(query).await?;
 
     Ok(results.into_iter().map(|r| SearchResult {

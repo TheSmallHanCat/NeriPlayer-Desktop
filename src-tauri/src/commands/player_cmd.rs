@@ -34,7 +34,7 @@ pub async fn play_url(url: String, duration_hint_ms: u64, state: State<'_, AppSt
         "https://music.163.com"
     };
 
-    let resp = state.http.get(&url)
+    let resp = state.http().get(&url)
         .header("Referer", referer)
         .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
         .send().await

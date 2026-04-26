@@ -26,7 +26,7 @@ pub async fn fetch_lyrics(
     netease_id: Option<u64>,
     state: State<'_, AppState>,
 ) -> AppResult<Vec<LyricLine>> {
-    let manager = LyricsManager::new(&state.http);
+    let manager = LyricsManager::new(&state.http());
     manager.fetch_lyrics(
         &title, &artist, duration_secs,
         audio_path.as_deref(), netease_id,
