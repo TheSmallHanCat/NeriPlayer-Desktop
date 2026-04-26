@@ -246,7 +246,7 @@ function openDlContextMenu(e: MouseEvent, track: any) {
   const btn = e.currentTarget as HTMLElement
   const rect = btn.getBoundingClientRect()
   const menuWidth = 200
-  const menuHeight = 60
+  const menuHeight = 96
   let x = rect.left - menuWidth - 4
   let y = rect.top
   if (x < 8) x = rect.right + 4
@@ -267,6 +267,15 @@ function requestDlDelete(track: any) {
   closeDlContextMenu()
   dlDeleteTarget.value = track
   showDlDeleteDialog.value = true
+}
+
+async function revealDownloadFile(track: any) {
+  closeDlContextMenu()
+  try {
+    await invoke('reveal_file', { path: track.filePath })
+  } catch (e) {
+    console.error('Failed to reveal file:', e)
+  }
 }
 
 async function confirmDlDelete() {
@@ -479,6 +488,10 @@ onUnmounted(() => {
     <Teleport to="body">
       <div v-if="dlContextMenu.show" class="context-overlay" @click="closeDlContextMenu" @contextmenu.prevent="closeDlContextMenu">
         <div class="context-menu" :style="{ left: dlContextMenu.x + 'px', top: dlContextMenu.y + 'px' }">
+          <button class="ctx-item" @click="revealDownloadFile(dlContextMenu.track!)">
+            <span class="material-symbols-rounded" style="font-size: 20px">folder_open</span>
+            <span>{{ t('download.open_folder') }}</span>
+          </button>
           <button class="ctx-item danger" @click="requestDlDelete(dlContextMenu.track!)">
             <span class="material-symbols-rounded" style="font-size: 20px">delete</span>
             <span>{{ t('common.delete') }}</span>

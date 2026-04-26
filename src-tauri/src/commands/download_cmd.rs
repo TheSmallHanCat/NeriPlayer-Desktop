@@ -30,7 +30,19 @@ fn sanitize_filename(s: &str) -> String {
         .to_string()
 }
 
-/// 根据 Content-Type 推断文件扩展名
+/// 根据模板渲染下载文件名（不含扩展名）
+/// 支持占位符：{title}, {artist}, {album}, {source}
+fn render_download_filename(title: &str, artist: &str, album: &str, source: &str, template: Option<&str>) -> String {
+    let default_template = "{artist} - {title}";
+    let tpl = template.filter(|t| !t.is_empty()).unwrap_or(default_template);
+    let rendered = tpl
+        .replace("{title}", title)
+        .replace("{artist}", artist)
+        .replace("{album}", album)
+        .replace("{source}", source);
+    let sanitized = sanitize_filename(&rendered);
+    if sanitized.is_empty() { sanitize_filename(title) } else { sanitized }
+}
 fn ext_from_content_type(content_type: &str) -> &str {
     if content_type.contains("mp4") || content_type.contains("m4a") || content_type.contains("aac") {
         "m4a"
@@ -48,10 +60,26 @@ fn ext_from_content_type(content_type: &str) -> &str {
 }
 
 /// 获取下载目录，不存在则创建
-fn downloads_dir(app: &AppHandle) -> AppResult<PathBuf> {
-    let dir = app.path().app_data_dir()
-        .map_err(|e| AppError::Other(e.to_string()))?
-        .join("downloads");
+/// 如果提供了 custom_dir 且有效，则使用自定义目录；否则 fallback 到默认目录
+fn downloads_dir(app: &AppHandle, custom_dir: Option<&str>) -> AppResult<PathBuf> {
+    let dir = if let Some(cd) = custom_dir {
+        if !cd.is_empty() {
+            let p = PathBuf::from(cd);
+            // 尝试创建目录（如果不存在）
+            if !p.exists() {
+                if std::fs::create_dir_all(&p).is_ok() {
+                    return Ok(p);
+                }
+                // 创建失败，fallback 到默认
+            } else {
+                return Ok(p);
+            }
+        }
+        // 空字符串或无效路径，fallback
+        default_downloads_dir(app)?
+    } else {
+        default_downloads_dir(app)?
+    };
     if !dir.exists() {
         std::fs::create_dir_all(&dir)
             .map_err(|e| AppError::Io(e))?;
@@ -59,9 +87,53 @@ fn downloads_dir(app: &AppHandle) -> AppResult<PathBuf> {
     Ok(dir)
 }
 
-/// manifest.json 路径
+/// 默认下载目录
+fn default_downloads_dir(app: &AppHandle) -> AppResult<PathBuf> {
+    let dir = app.path().app_data_dir()
+        .map_err(|e| AppError::Other(e.to_string()))?
+        .join("downloads");
+    Ok(dir)
+}
+
+/// 验证并设置下载目录
+#[tauri::command]
+pub async fn set_download_dir(path: String) -> AppResult<String> {
+    let p = PathBuf::from(&path);
+    // 确保目录存在
+    if !p.exists() {
+        std::fs::create_dir_all(&p)
+            .map_err(|e| AppError::Other(format!("Cannot create directory: {}", e)))?;
+    }
+    // 验证可写：创建临时文件再删除
+    let test_file = p.join(".neri_write_test");
+    std::fs::write(&test_file, b"test")
+        .map_err(|_| AppError::Other("Directory is not writable".into()))?;
+    let _ = std::fs::remove_file(&test_file);
+    // 返回规范化路径
+    let canonical = p.canonicalize()
+        .unwrap_or(p)
+        .to_string_lossy()
+        .to_string();
+    // 移除 Windows UNC 前缀 \\?\
+    let canonical = canonical.strip_prefix(r"\\?\").unwrap_or(&canonical).to_string();
+    Ok(canonical)
+}
+
+/// 获取默认下载目录路径
+#[tauri::command]
+pub async fn get_default_download_dir(app: AppHandle) -> AppResult<String> {
+    let dir = default_downloads_dir(&app)?;
+    Ok(dir.to_string_lossy().to_string())
+}
+
+/// manifest.json 路径（始终存储在默认下载目录，与自定义目录无关）
 fn manifest_path(app: &AppHandle) -> AppResult<PathBuf> {
-    Ok(downloads_dir(app)?.join("manifest.json"))
+    let dir = default_downloads_dir(app)?;
+    if !dir.exists() {
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| AppError::Io(e))?;
+    }
+    Ok(dir.join("manifest.json"))
 }
 
 /// 读取 manifest
@@ -97,6 +169,8 @@ pub async fn download_track(
     duration_ms: u64,
     cover_url: Option<String>,
     source: String,
+    download_dir: Option<String>,
+    name_template: Option<String>,
 ) -> AppResult<DownloadedTrack> {
     // 发送开始事件
     let _ = app.emit("download-progress", serde_json::json!({
@@ -123,7 +197,7 @@ pub async fn download_track(
         "https://music.163.com"
     };
 
-    let resp = state.http.get(&url)
+    let resp = state.http().get(&url)
         .header("Referer", referer)
         .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
         .send().await
@@ -173,14 +247,11 @@ pub async fn download_track(
         return Err(AppError::Audio("Empty audio data received".into()));
     }
 
-    // 构造文件名：{artist} - {title}.{ext}
-    let filename = if artist.is_empty() {
-        format!("{}.{}", sanitize_filename(&title), ext)
-    } else {
-        format!("{} - {}.{}", sanitize_filename(&artist), sanitize_filename(&title), ext)
-    };
+    // 构造文件名：使用模板
+    let base_name = render_download_filename(&title, &artist, &album, &source, name_template.as_deref());
+    let filename = format!("{}.{}", base_name, ext);
 
-    let dir = downloads_dir(&app)?;
+    let dir = downloads_dir(&app, download_dir.as_deref())?;
     let file_path = dir.join(&filename);
     let file_size = bytes.len() as u64;
 
@@ -243,5 +314,39 @@ pub async fn delete_download(app: AppHandle, track_id: String) -> AppResult<()> 
         return Err(AppError::NotFound("Download not found".into()));
     }
 
+    Ok(())
+}
+
+/// 在系统文件管理器中显示文件
+#[tauri::command]
+pub async fn reveal_file(path: String) -> AppResult<()> {
+    let p = std::path::Path::new(&path);
+    if !p.exists() {
+        return Err(AppError::NotFound("File not found".into()));
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer")
+            .args(["/select,", &path])
+            .spawn()
+            .map_err(|e| AppError::Other(e.to_string()))?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .args(["-R", &path])
+            .spawn()
+            .map_err(|e| AppError::Other(e.to_string()))?;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        // xdg-open on parent directory
+        if let Some(parent) = p.parent() {
+            std::process::Command::new("xdg-open")
+                .arg(parent)
+                .spawn()
+                .map_err(|e| AppError::Other(e.to_string()))?;
+        }
+    }
     Ok(())
 }

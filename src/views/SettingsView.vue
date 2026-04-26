@@ -2,20 +2,28 @@
 import { ref, computed, onMounted } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useI18n } from 'vue-i18n'
+import { useRouter } from 'vue-router'
 import { SUPPORTED_LOCALES, setLocaleWithTransition } from '@/i18n'
 import { open as shellOpen } from '@tauri-apps/plugin-shell'
+import { open as dialogOpen } from '@tauri-apps/plugin-dialog'
+import { invoke } from '@tauri-apps/api/core'
 import { useSettingsStore } from '@/stores/settings'
 import { useAuthStore } from '@/stores/auth'
 import { useSyncStore } from '@/stores/sync'
+import { useDownloadStore } from '@/stores/download'
+import { useToastStore } from '@/stores/toast'
 import { switchThemeWithRipple, type ThemeMode } from '@/utils/theme'
 import { THEME_COLORS, getSwatchColor, applyThemeColor, getSavedThemeColor, switchThemeColorWithRipple } from '@/utils/themeColor'
 
 const { t, locale } = useI18n()
+const router = useRouter()
 const settings = useSettingsStore()
 const auth = useAuthStore()
 const syncStore = useSyncStore()
+const downloadStore = useDownloadStore()
+const toast = useToastStore()
 const {
-  darkMode, themeColor: selectedColor,
+  darkMode, themeColor: selectedColor, coverStyle,
   defaultScreen, showCoverBadge, showNowPlayingTitle, showToolbarDock,
   showQualitySwitch, showAudioCodec, showAudioSpec, lyricFontScale,
   crossfade, normalizeVolume,
@@ -27,7 +35,10 @@ const {
   advancedLyrics, dynamicBackground, audioReactive,
   coverBlurBg, coverBlurAmount, coverBlurDarken,
   neteaseQuality, youtubeQuality, biliQuality,
-  maxCacheSize, downloadNameTemplate,
+  bypassProxy, internationalizationEnabled,
+  backgroundImageUri, backgroundImageBlur, backgroundImageAlpha,
+  devModeEnabled,
+  maxCacheSize, downloadNameTemplate, downloadDir,
 } = storeToRefs(settings)
 
 // 折叠过渡 hooks
@@ -147,7 +158,174 @@ const expandedSections = ref<Set<string>>(new Set())
 onMounted(() => {
   auth.checkStatus()
   syncStore.loadConfigs()
+  downloadStore.initEvents()
+  downloadStore.loadDownloads()
+  // 加载构建信息
+  loadBuildInfo()
+  // 加载默认下载目录
+  loadDefaultDownloadDir()
 })
+
+// ── 网络：绕过代理 ──
+async function handleBypassProxyChange(val: boolean) {
+  bypassProxy.value = val
+  try {
+    await invoke('set_bypass_proxy', { bypass: val })
+  } catch (e) {
+    console.error('Failed to set bypass proxy:', e)
+  }
+}
+
+// ── 下载管理 ──
+const activeDownloadCount = computed(() => downloadStore.downloading.size)
+const completedDownloadCount = computed(() => downloadStore.downloads.length)
+
+// ── 下载目录 ──
+const defaultDownloadDir = ref('')
+
+async function loadDefaultDownloadDir() {
+  try {
+    defaultDownloadDir.value = await invoke<string>('get_default_download_dir')
+  } catch (e) {
+    console.error('Failed to get default download dir:', e)
+  }
+}
+
+const displayDownloadDir = computed(() => downloadDir.value || defaultDownloadDir.value || '...')
+
+async function selectDownloadDir() {
+  try {
+    const result = await dialogOpen({ directory: true })
+    if (result) {
+      const path = typeof result === 'string' ? result : (result as any).path || String(result)
+      const validated = await invoke<string>('set_download_dir', { path })
+      downloadDir.value = validated
+      toast.success(t('settings.download_dir_changed'))
+    }
+  } catch (e: any) {
+    console.error('Failed to set download dir:', e)
+    toast.error(t('settings.download_dir_invalid'))
+  }
+}
+
+function resetDownloadDir() {
+  downloadDir.value = ''
+}
+
+// ── 下载文件名格式 ──
+const showDownloadTemplateDialog = ref(false)
+const pendingTemplate = ref('')
+
+function openDownloadTemplateDialog() {
+  pendingTemplate.value = downloadNameTemplate.value || '{artist} - {title}'
+  showDownloadTemplateDialog.value = true
+}
+
+const templatePreview = computed(() => {
+  const tpl = pendingTemplate.value || '{artist} - {title}'
+  return tpl
+    .replace('{title}', '晴天')
+    .replace('{artist}', '周杰伦')
+    .replace('{album}', '叶惠美')
+    .replace('{source}', 'netease')
+})
+
+function applyDownloadTemplate() {
+  downloadNameTemplate.value = pendingTemplate.value.trim() || '{artist} - {title}'
+  showDownloadTemplateDialog.value = false
+}
+
+function resetDownloadTemplate() {
+  pendingTemplate.value = '{artist} - {title}'
+  downloadNameTemplate.value = '{artist} - {title}'
+  showDownloadTemplateDialog.value = false
+}
+
+function cancelAllDownloads() {
+  downloadStore.cancelAllDownloads()
+}
+
+function goToDownloads() {
+  router.push('/library?tab=downloads')
+}
+
+// ── YouTube 国际化 ──
+const intlChecking = ref(false)
+
+async function handleIntlToggle(val: boolean) {
+  const prev = internationalizationEnabled.value
+  internationalizationEnabled.value = val
+  if (val) {
+    intlChecking.value = true
+    try {
+      // 简单连通性检测：尝试调用 YouTube API
+      await invoke('get_youtube_audio_url', { videoId: 'dQw4w9WgXcQ' })
+    } catch {
+      // 失败时回退
+      internationalizationEnabled.value = prev
+      toast.error(t('settings.intl_check_failed'))
+    } finally {
+      intlChecking.value = false
+    }
+  }
+}
+
+// ── 封面样式选项 ──
+const coverStyleOptions = computed(() => [
+  { value: 'disc', label: t('settings.cover_style_disc') },
+  { value: 'card', label: t('settings.cover_style_card') },
+])
+
+// ── 背景图片选择 ──
+async function selectBackgroundImage() {
+  try {
+    const result = await dialogOpen({
+      multiple: false,
+      filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'webp', 'bmp'] }],
+    })
+    if (result) {
+      backgroundImageUri.value = typeof result === 'string' ? result : (result as any).path || String(result)
+    }
+  } catch (e) {
+    console.error('Failed to select image:', e)
+  }
+}
+
+function clearBackgroundImage() {
+  backgroundImageUri.value = ''
+}
+
+// ── 开发者模式：7-tap 解锁 ──
+const versionTapCount = ref(0)
+let tapTimer: ReturnType<typeof setTimeout> | null = null
+
+function handleVersionTap() {
+  toggleSection('about')
+  if (devModeEnabled.value) return // 已解锁
+  versionTapCount.value++
+  if (tapTimer) clearTimeout(tapTimer)
+  tapTimer = setTimeout(() => { versionTapCount.value = 0 }, 3000)
+
+  const remaining = 7 - versionTapCount.value
+  if (remaining <= 0) {
+    devModeEnabled.value = true
+    versionTapCount.value = 0
+    toast.success(t('settings.dev_mode_toast'))
+  } else if (remaining <= 3) {
+    toast.success(t('settings.dev_mode_tap_hint', { count: remaining }))
+  }
+}
+
+// ── 构建信息 ──
+const buildInfo = ref<{ build_uuid: string; build_timestamp: string; version: string } | null>(null)
+
+async function loadBuildInfo() {
+  try {
+    buildInfo.value = await invoke('get_build_info')
+  } catch (e) {
+    console.error('Failed to load build info:', e)
+  }
+}
 
 // GitHub 同步两阶段引导（对齐 Android）
 const showGitHubDialog = ref(false)
@@ -317,6 +495,25 @@ async function confirmClearGitHub() {
       </template>
     </div>
 
+    <!-- YouTube 国际化 -->
+    <div class="setting-card">
+      <div class="setting-icon-wrap"><span class="material-symbols-rounded">language</span></div>
+      <div class="setting-info">
+        <div class="setting-title">{{ t('settings.internationalization') }}</div>
+        <div class="setting-desc">
+          <template v-if="intlChecking">{{ t('settings.intl_checking') }}</template>
+          <template v-else>{{ t('settings.internationalization_desc') }}</template>
+        </div>
+      </div>
+      <label class="m3-switch">
+        <input type="checkbox" :checked="internationalizationEnabled" @change="handleIntlToggle(($event.target as HTMLInputElement).checked)" />
+        <span class="track"><span class="thumb">
+          <span v-if="intlChecking" class="material-symbols-rounded spinning" style="font-size: 14px">progress_activity</span>
+          <span v-else-if="internationalizationEnabled" class="material-symbols-rounded" style="font-size: 14px">check</span>
+        </span></span>
+      </label>
+    </div>
+
     <!-- 外观 -->
     <div class="section-label">
       <span class="material-symbols-rounded" style="font-size: 18px">palette</span>
@@ -445,6 +642,47 @@ async function confirmClearGitHub() {
         </div>
         <input type="range" class="m3-slider" v-model.number="lyricFontScale" min="0.5" max="1.5" step="0.1" />
       </div>
+
+      <!-- 封面样式 -->
+      <div class="setting-card">
+        <div class="setting-icon-wrap"><span class="material-symbols-rounded">album</span></div>
+        <div class="setting-info">
+          <div class="setting-title">{{ t('settings.cover_style') }}</div>
+        </div>
+        <div class="chip-row">
+          <button v-for="o in coverStyleOptions" :key="o.value" class="m3-chip" :class="{ active: coverStyle === o.value }" @click="coverStyle = o.value as any">{{ o.label }}</button>
+        </div>
+      </div>
+
+      <!-- 自定义背景图 -->
+      <div class="setting-card">
+        <div class="setting-icon-wrap"><span class="material-symbols-rounded">wallpaper</span></div>
+        <div class="setting-info">
+          <div class="setting-title">{{ t('settings.background_image') }}</div>
+          <div class="setting-desc">{{ backgroundImageUri ? backgroundImageUri.split(/[\\/]/).pop() : t('settings.background_image_desc') }}</div>
+        </div>
+        <div class="chip-row">
+          <button class="m3-chip sm" @click="selectBackgroundImage">{{ t('settings.select_image') }}</button>
+          <button v-if="backgroundImageUri" class="m3-chip sm" @click="clearBackgroundImage">{{ t('settings.clear_image') }}</button>
+        </div>
+      </div>
+
+      <template v-if="backgroundImageUri">
+        <div class="setting-card sub-card">
+          <div class="setting-info">
+            <div class="setting-title">{{ t('settings.bg_blur') }}</div>
+            <div class="setting-desc">{{ backgroundImageBlur }}px</div>
+          </div>
+          <input type="range" class="m3-slider" v-model.number="backgroundImageBlur" min="0" max="100" step="5" />
+        </div>
+        <div class="setting-card sub-card">
+          <div class="setting-info">
+            <div class="setting-title">{{ t('settings.bg_opacity') }}</div>
+            <div class="setting-desc">{{ (backgroundImageAlpha * 100).toFixed(0) }}%</div>
+          </div>
+          <input type="range" class="m3-slider" v-model.number="backgroundImageAlpha" min="0" max="1" step="0.05" />
+        </div>
+      </template>
     </div></Transition>
 
     <!-- 播放 -->
@@ -543,6 +781,46 @@ async function confirmClearGitHub() {
         <label class="m3-switch"><input type="checkbox" v-model="keepPlaybackMode" /><span class="track"><span class="thumb"><span v-if="keepPlaybackMode" class="material-symbols-rounded" style="font-size: 14px">check</span></span></span></label>
       </div>
     </div></Transition>
+
+    <!-- 网络 -->
+    <div class="section-label">
+      <span class="material-symbols-rounded" style="font-size: 18px">wifi</span>
+      <span>{{ t('settings.network') }}</span>
+    </div>
+
+    <div class="setting-card">
+      <div class="setting-icon-wrap"><span class="material-symbols-rounded">vpn_lock</span></div>
+      <div class="setting-info">
+        <div class="setting-title">{{ t('settings.bypass_proxy') }}</div>
+        <div class="setting-desc">{{ t('settings.bypass_proxy_desc') }}</div>
+      </div>
+      <label class="m3-switch">
+        <input type="checkbox" :checked="bypassProxy" @change="handleBypassProxyChange(($event.target as HTMLInputElement).checked)" />
+        <span class="track"><span class="thumb"><span v-if="bypassProxy" class="material-symbols-rounded" style="font-size: 14px">check</span></span></span>
+      </label>
+    </div>
+
+    <!-- 下载管理 -->
+    <div class="section-label">
+      <span class="material-symbols-rounded" style="font-size: 18px">download</span>
+      <span>{{ t('settings.download_manage') }}</span>
+    </div>
+
+    <div v-if="activeDownloadCount > 0" class="setting-card">
+      <div class="setting-icon-wrap"><span class="material-symbols-rounded">downloading</span></div>
+      <div class="setting-info">
+        <div class="setting-title">{{ t('settings.download_progress', { completed: completedDownloadCount, total: completedDownloadCount + activeDownloadCount }) }}</div>
+      </div>
+      <button class="m3-chip sm" style="color: var(--md-error); border-color: var(--md-error)" @click="cancelAllDownloads">{{ t('settings.cancel_all_downloads') }}</button>
+    </div>
+    <div v-else class="setting-card" style="cursor: pointer" @click="goToDownloads">
+      <div class="setting-icon-wrap"><span class="material-symbols-rounded">folder_open</span></div>
+      <div class="setting-info">
+        <div class="setting-title">{{ t('settings.go_to_downloads') }}</div>
+        <div class="setting-desc">{{ completedDownloadCount > 0 ? t('player.track_count', { count: completedDownloadCount }) : t('settings.no_active_downloads') }}</div>
+      </div>
+      <span class="material-symbols-rounded" style="font-size: 20px; opacity: 0.3">chevron_right</span>
+    </div>
 
     <!-- 歌词 -->
     <div class="section-label clickable" @click="toggleSection('lyrics')">
@@ -715,13 +993,25 @@ async function confirmClearGitHub() {
         <input type="range" class="m3-slider" v-model.number="maxCacheSize" min="256" max="10240" step="256" />
       </div>
 
-      <div class="setting-card">
+      <div class="setting-card" style="cursor: pointer" @click="openDownloadTemplateDialog">
         <div class="setting-icon-wrap"><span class="material-symbols-rounded">text_fields</span></div>
         <div class="setting-info">
           <div class="setting-title">{{ t('settings.download_format') }}</div>
           <div class="setting-desc">{{ downloadNameTemplate }}</div>
         </div>
-        <span class="material-symbols-rounded" style="font-size: 20px; opacity: 0.3; cursor: pointer">edit</span>
+        <span class="material-symbols-rounded" style="font-size: 20px; opacity: 0.3">edit</span>
+      </div>
+
+      <div class="setting-card">
+        <div class="setting-icon-wrap"><span class="material-symbols-rounded">folder</span></div>
+        <div class="setting-info">
+          <div class="setting-title">{{ t('settings.download_dir') }}</div>
+          <div class="setting-desc" style="word-break: break-all">{{ displayDownloadDir }}</div>
+        </div>
+        <div class="chip-row">
+          <button class="m3-chip sm" :disabled="activeDownloadCount > 0" @click="selectDownloadDir">{{ t('settings.download_dir_select') }}</button>
+          <button v-if="downloadDir" class="m3-chip sm" :disabled="activeDownloadCount > 0" @click="resetDownloadDir">{{ t('settings.download_dir_reset') }}</button>
+        </div>
       </div>
 
       <div class="setting-card" style="cursor: pointer" @click="syncStore.clearCache()">
@@ -911,16 +1201,33 @@ async function confirmClearGitHub() {
       <span>{{ t('settings.about') }}</span>
     </div>
 
-    <div class="setting-card about-card">
+    <div class="setting-card about-card" @click="handleVersionTap" style="cursor: pointer">
       <div class="setting-icon-wrap accent">
         <img src="/app-icon.png" alt="NeriPlayer" style="width: 24px; height: 24px; border-radius: 4px;" />
       </div>
       <div class="setting-info">
-        <div class="setting-title">NeriPlayer Desktop</div>
-        <div class="setting-desc">{{ t('settings.version_info', { version: '1.0.0' }) }}</div>
+        <div class="setting-title">NeriPlayer Desktop{{ devModeEnabled ? ' (dev)' : '' }}</div>
+        <div class="setting-desc">{{ t('settings.version_info', { version: buildInfo?.version || '1.0.0' }) }}</div>
       </div>
-      <span class="material-symbols-rounded" style="font-size: 20px; opacity: 0.3">chevron_right</span>
+      <span class="material-symbols-rounded section-arrow" :class="{ expanded: isExpanded('about') }" style="font-size: 20px; opacity: 0.3">expand_more</span>
     </div>
+
+    <Transition @enter="onExpandEnter" @after-enter="onExpandAfterEnter" @leave="onExpandLeave" @after-leave="onExpandAfterLeave"><div v-if="isExpanded('about') && buildInfo">
+      <div class="setting-card sub-card">
+        <div class="setting-icon-wrap"><span class="material-symbols-rounded">fingerprint</span></div>
+        <div class="setting-info">
+          <div class="setting-title">{{ t('settings.build_uuid') }}</div>
+          <div class="setting-desc" style="font-family: monospace; font-size: 11px">{{ buildInfo.build_uuid }}</div>
+        </div>
+      </div>
+      <div class="setting-card sub-card">
+        <div class="setting-icon-wrap"><span class="material-symbols-rounded">schedule</span></div>
+        <div class="setting-info">
+          <div class="setting-title">{{ t('settings.build_time') }}</div>
+          <div class="setting-desc">{{ buildInfo.build_timestamp }}</div>
+        </div>
+      </div>
+    </div></Transition>
 
     <div class="setting-card" style="cursor: pointer" @click="shellOpen('https://github.com/nicepkg/NeriPlayer')">
       <div class="setting-icon-wrap"><span class="material-symbols-rounded">code</span></div>
@@ -1061,6 +1368,30 @@ async function confirmClearGitHub() {
           <div class="dialog-actions">
             <button class="dialog-btn" @click="showClearGitHubConfirm = false">{{ t('settings.cancel') }}</button>
             <button class="dialog-btn danger" @click="confirmClearGitHub">{{ t('settings.clear_config_confirm') }}</button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- 下载文件名格式编辑对话框 -->
+    <Teleport to="body">
+      <div v-if="showDownloadTemplateDialog" class="dialog-overlay" @click.self="showDownloadTemplateDialog = false">
+        <div class="dialog-card" style="width: 420px">
+          <h3 class="dialog-title">{{ t('settings.download_format') }}</h3>
+          <p class="dialog-desc">{{ t('settings.download_format_desc') }}</p>
+          <div class="dialog-field">
+            <label>{{ t('settings.download_format_template') }}</label>
+            <input v-model="pendingTemplate" type="text" :placeholder="'{artist} - {title}'" />
+          </div>
+          <p class="field-hint">{{ t('settings.download_format_supported') }}</p>
+          <div class="template-preview">
+            <span class="preview-label">{{ t('settings.download_format_preview') }}</span>
+            <span class="preview-value">{{ templatePreview }}</span>
+          </div>
+          <div class="dialog-actions">
+            <button class="dialog-btn" @click="resetDownloadTemplate">{{ t('settings.download_format_reset') }}</button>
+            <button class="dialog-btn" @click="showDownloadTemplateDialog = false">{{ t('settings.cancel') }}</button>
+            <button class="dialog-btn primary" @click="applyDownloadTemplate">{{ t('settings.download_format_apply') }}</button>
           </div>
         </div>
       </div>
@@ -1670,6 +2001,28 @@ async function confirmClearGitHub() {
       border-radius: var(--radius-full);
       background: var(--md-primary);
     }
+  }
+}
+
+.template-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 14px;
+  border-radius: var(--radius-md);
+  background: var(--md-surface-container);
+  margin-bottom: 12px;
+
+  .preview-label {
+    font-size: 11px;
+    color: var(--md-on-surface-variant);
+    opacity: 0.7;
+  }
+  .preview-value {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--md-on-surface);
+    word-break: break-all;
   }
 }
 </style>

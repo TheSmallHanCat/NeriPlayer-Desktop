@@ -148,6 +148,8 @@ export const useDownloadStore = defineStore('download', () => {
         durationMs: track.durationMs,
         coverUrl: track.coverUrl || null,
         source,
+        downloadDir: useSettingsStore().downloadDir || null,
+        nameTemplate: useSettingsStore().downloadNameTemplate || null,
       })
     } catch (e: any) {
       console.error('Download failed:', e)
@@ -183,6 +185,13 @@ export const useDownloadStore = defineStore('download', () => {
     return downloads.value.find(t => t.id === trackId)
   }
 
+  function cancelAllDownloads() {
+    // 清除所有进行中的下载状态
+    downloading.value = new Map()
+    const toast = useToastStore()
+    toast.success((i18n.global as any).t('download.downloaded'))
+  }
+
   return {
     downloads,
     downloading,
@@ -192,6 +201,7 @@ export const useDownloadStore = defineStore('download', () => {
     isDownloaded,
     isDownloading,
     getDownloadedTrack,
+    cancelAllDownloads,
     initEvents,
   }
 })

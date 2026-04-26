@@ -128,6 +128,8 @@ fn main() {
             settings_cmd::get_bili_audio_url,
             settings_cmd::get_youtube_audio_url,
             settings_cmd::save_file_bytes,
+            settings_cmd::set_bypass_proxy,
+            settings_cmd::get_build_info,
             auth_cmd::login_netease,
             auth_cmd::login_bilibili,
             auth_cmd::login_youtube,
@@ -169,6 +171,9 @@ fn main() {
             download_cmd::download_track,
             download_cmd::list_downloads,
             download_cmd::delete_download,
+            download_cmd::set_download_dir,
+            download_cmd::get_default_download_dir,
+            download_cmd::reveal_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

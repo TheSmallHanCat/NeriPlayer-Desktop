@@ -65,9 +65,25 @@ export const useSettingsStore = defineStore('settings', () => {
   const youtubeQuality = ref(loadSetting('youtube_quality', 'very_high'))
   const biliQuality = ref(loadSetting('bili_quality', 'high'))
 
+  // 网络
+  const bypassProxy = ref(loadSetting('bypass_proxy', true))
+
+  // YouTube 国际化
+  const internationalizationEnabled = ref(loadSetting('intl_enabled',
+    typeof navigator !== 'undefined' && !navigator.language.startsWith('zh')))
+
+  // 个性化 — 背景图
+  const backgroundImageUri = ref(loadSetting('bg_image_uri', ''))
+  const backgroundImageBlur = ref(loadSetting('bg_image_blur', 20))
+  const backgroundImageAlpha = ref(loadSetting('bg_image_alpha', 0.3))
+
+  // 开发者模式
+  const devModeEnabled = ref(loadSetting('dev_mode', false))
+
   // 存储
   const maxCacheSize = ref(loadSetting('cache_size', 1024))
   const downloadNameTemplate = ref(loadSetting('download_template', '{artist} - {title}'))
+  const downloadDir = ref(loadSetting('download_dir', ''))
 
   // 自动持久化：watch 所有 ref，变化时保存
   const allSettings: Record<string, any> = {
@@ -88,8 +104,12 @@ export const useSettingsStore = defineStore('settings', () => {
     cover_blur_bg: coverBlurBg, cover_blur_amount: coverBlurAmount,
     cover_blur_darken: coverBlurDarken,
     netease_quality: neteaseQuality, youtube_quality: youtubeQuality,
-    bili_quality: biliQuality, cache_size: maxCacheSize,
-    download_template: downloadNameTemplate,
+    bili_quality: biliQuality, bypass_proxy: bypassProxy,
+    intl_enabled: internationalizationEnabled,
+    bg_image_uri: backgroundImageUri, bg_image_blur: backgroundImageBlur,
+    bg_image_alpha: backgroundImageAlpha, dev_mode: devModeEnabled,
+    cache_size: maxCacheSize, download_template: downloadNameTemplate,
+    download_dir: downloadDir,
   }
 
   for (const [key, refVal] of Object.entries(allSettings)) {
@@ -109,6 +129,9 @@ export const useSettingsStore = defineStore('settings', () => {
     advancedLyrics, dynamicBackground, audioReactive,
     coverBlurBg, coverBlurAmount, coverBlurDarken,
     neteaseQuality, youtubeQuality, biliQuality,
-    maxCacheSize, downloadNameTemplate,
+    bypassProxy, internationalizationEnabled,
+    backgroundImageUri, backgroundImageBlur, backgroundImageAlpha,
+    devModeEnabled,
+    maxCacheSize, downloadNameTemplate, downloadDir,
   }
 })
